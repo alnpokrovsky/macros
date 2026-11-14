@@ -1,5 +1,10 @@
 import { App, Modal, Notice, Component, normalizePath, TFile, setIcon } from 'obsidian';
-import { searchAllSources, searchFoundationFoodsOnly, UnifiedFoodResult } from '../../core/search';
+import {
+  searchAllSources,
+  searchFoundationFoodsOnly,
+  searchOpenFoodFactsUnified,
+  UnifiedFoodResult,
+} from '../../core/search';
 import { searchByBarcode, validateBarcodeChecksum } from '../../core/barcodeSearch';
 import { searchFoods } from '../../core/usda';
 import { BarcodeScannerModal } from '../../utils/BarcodeScanner';
@@ -37,6 +42,9 @@ export class LiveFoodSearchModal extends Modal {
   private noResultsMessage: HTMLElement;
   private searchTimeout: number | null = null;
   private maxResults = 50;
+  // Debounce delay for keystroke-driven search (ms). Tunable so it can be
+  // adjusted without touching the search logic.
+  private searchDebounceMs = 300;
   private results: UnifiedFoodResult[] = [];
   private allResults: UnifiedFoodResult[] = []; // Store all results for infinite scroll
   private selectedIndex = -1;
@@ -54,8 +62,13 @@ export class LiveFoodSearchModal extends Modal {
   // Cache of fetched results keyed by tab+query so re-visiting a tab is instant.
   private resultCache: Map<
     string,
-    { results: UnifiedFoodResult[]; page: number; hasMore: boolean }
+    { results: UnifiedFoodResult[]; page: number; hasMore: boolean; timestamp: number }
   > = new Map();
+
+  // Results older than this are considered stale and re-fetched.
+  private static readonly CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+  // Cap the number of cached queries so the cache cannot grow unboundedly.
+  private static readonly MAX_CACHE_ENTRIES = 50;
 
   // Tab elements
   private allTab?: HTMLElement;
@@ -75,6 +88,12 @@ export class LiveFoodSearchModal extends Modal {
     super(app);
     this.component = new Component();
     this.determineAvailableTabs();
+
+    // Register with the plugin so Open Food Facts settings changes can
+    // invalidate this modal's result cache (stale-while-revalidate safety net).
+    if (this.plugin) {
+      this.plugin.registerSearchModal(this);
+    }
   }
 
   /**
@@ -174,6 +193,12 @@ export class LiveFoodSearchModal extends Modal {
     // Component cleanup handles all registered DOM events
     this.component.unload();
     this.contentEl.empty();
+
+    // Unregister from the plugin so its search-modal cache registry
+    // doesn't hold a reference to this closed modal.
+    if (this.plugin) {
+      this.plugin.unregisterSearchModal(this);
+    }
   }
 
   private createTabs(): void {
@@ -246,21 +271,37 @@ export class LiveFoodSearchModal extends Modal {
   }
 
   private getCacheKey(searchTerm: string): string {
-    return `${this.currentTab}::${searchTerm.toLowerCase()}`;
+    // Include language and data-quality filter so the cache is self-correcting:
+    // results filtered under different settings are stored under different keys
+    // and never served stale even if settings-change invalidation is missed.
+    const settings = this.plugin?.settings;
+    const language = settings?.openFoodFactsLanguage ?? 'auto';
+    const dataQuality = settings?.openFoodFactsDataQualityFilter ?? 'all';
+    return `${this.currentTab}::${language}::${dataQuality}::${searchTerm.toLowerCase()}`;
   }
 
   private storeResultsInCache(searchTerm: string): void {
     if (!searchTerm) return;
+    this.evictStaleCacheEntries();
+    this.enforceCacheSizeCap();
+
     this.resultCache.set(this.getCacheKey(searchTerm), {
       results: this.allResults.slice(),
       page: this.currentPage,
       hasMore: this.hasMoreResults,
+      timestamp: Date.now(),
     });
   }
 
   private restoreResultsFromCache(searchTerm: string): boolean {
     const cached = this.resultCache.get(this.getCacheKey(searchTerm));
     if (!cached || cached.results.length === 0) return false;
+
+    // Ignore stale entries so callers re-fetch fresh results.
+    if (Date.now() - cached.timestamp > LiveFoodSearchModal.CACHE_TTL_MS) {
+      this.resultCache.delete(this.getCacheKey(searchTerm));
+      return false;
+    }
 
     this.allResults = cached.results.slice();
     this.results = this.allResults;
@@ -275,6 +316,40 @@ export class LiveFoodSearchModal extends Modal {
     this.loadingIndicator.classList.add('is-hidden');
     this.renderResults(searchTerm);
     return true;
+  }
+
+  /** Drop cache entries that have exceeded the TTL. */
+  private evictStaleCacheEntries(): void {
+    const now = Date.now();
+    for (const [key, entry] of this.resultCache.entries()) {
+      if (now - entry.timestamp > LiveFoodSearchModal.CACHE_TTL_MS) {
+        this.resultCache.delete(key);
+      }
+    }
+  }
+
+  /** Cap the cache size by removing the oldest entries. */
+  private enforceCacheSizeCap(): void {
+    if (this.resultCache.size < LiveFoodSearchModal.MAX_CACHE_ENTRIES) return;
+
+    const entries = Array.from(this.resultCache.entries()).sort(
+      (a, b) => a[1].timestamp - b[1].timestamp
+    );
+    const toRemove = entries.slice(0, entries.length - LiveFoodSearchModal.MAX_CACHE_ENTRIES);
+    for (const [key] of toRemove) {
+      this.resultCache.delete(key);
+    }
+  }
+
+  /** Clear all cached search results. Called when settings change so cached
+   *  results (filtered, language-specific, or from a now-disabled source) are
+   *  not served stale after the settings that produced them change. Also
+   *  resets search-mode state so a settings change doesn't leave the modal in
+   *  "barcode mode" when the user next switches tabs. */
+  public clearSearchCache(): void {
+    this.resultCache.clear();
+    this.isBarcodeSearch = false;
+    this.currentSearchTerm = '';
   }
 
   private switchTab(tab: SearchTab): void {
@@ -298,9 +373,28 @@ export class LiveFoodSearchModal extends Modal {
         this.currentSearchAbortController.abort();
         this.currentSearchAbortController = null;
       }
-      if (this.isBarcodeSearch) {
+
+      // Remember whether the previous search was a barcode search before
+      // restoreResultsFromCache() resets the flag.
+      const wasBarcodeSearch = this.isBarcodeSearch;
+
+      // Show cached results immediately for instant feedback (stale-while-revalidate).
+      // Fresh results are fetched below and replace the cache once they arrive.
+      // On a first-visit cache miss, clear stale results and show the loading
+      // indicator so the user doesn't see the previous tab's results under the
+      // newly-active tab.
+      const hadCachedResults = this.restoreResultsFromCache(currentQuery);
+      if (!hadCachedResults) {
+        this.results = [];
+        this.allResults = [];
+        this.loadingIndicator.classList.remove('is-hidden');
+        this.noResultsMessage.classList.add('is-hidden');
+      }
+
+      // Always fetch fresh results when switching tabs so the data is never stale.
+      if (wasBarcodeSearch) {
         void this.performBarcodeSearch(currentQuery);
-      } else if (!this.restoreResultsFromCache(currentQuery)) {
+      } else {
         void this.performSearch(currentQuery);
       }
     }
@@ -553,7 +647,7 @@ export class LiveFoodSearchModal extends Modal {
           void this.performSearch(searchTerm);
         }
       }
-    }, 300);
+    }, this.searchDebounceMs);
   };
 
   handleKeyboardNavigation = (event: KeyboardEvent) => {
@@ -748,35 +842,15 @@ export class LiveFoodSearchModal extends Modal {
           const offLanguage =
             settings.openFoodFactsLanguage === 'auto' ? userLocale : settings.openFoodFactsLanguage;
 
-          // Import and use Open Food Facts search
-          const { searchOpenFoodFacts } = await import('../../core/openFoodFacts');
-          const offResults = await searchOpenFoodFacts(
+          // Reuse the shared converter so the OffFoodResult -> UnifiedFoodResult
+          // mapping lives in one place (search.ts) rather than being duplicated here.
+          newResults = await searchOpenFoodFactsUnified(
             this.app,
             searchTerm,
             0,
             this.maxResults,
             offLanguage
           );
-
-          // Convert to UnifiedFoodResult format
-          newResults = offResults.map((item) => ({
-            id: `off_${item.code}`,
-            name: item.productName,
-            description: item.displayDescription,
-            gramsServing: item.gramsServing,
-            source: 'openfoodfacts' as const,
-            brandName: item.brands,
-            nutritionGrade: item.nutritionGrade,
-            novaGroup: item.novaGroup,
-            dataQuality: item.dataQuality,
-            completeness: item.completeness,
-            ecoscore: item.ecoscore,
-            imageUrl: item.imageUrl,
-            categories: item.categories,
-            ingredients: item.ingredientsText,
-            micronutrients: item.micronutrients,
-            raw: item,
-          }));
 
           // Apply data quality filter
           if (settings.openFoodFactsDataQualityFilter !== 'all') {

@@ -303,10 +303,18 @@ export async function searchAllSources(
 ): Promise<UnifiedFoodResult[]> {
   const searchPromises: Promise<UnifiedFoodResult[]>[] = [];
 
+  // Request only the slice of each source's results we are likely to need after
+  // merging and deduplication. Fetching a full page from every source then slicing
+  // to `pageSize` wastes bandwidth and slows the search, especially when sources
+  // overlap (the same food appears in USDA and Open Food Facts).
+  const usdaPage = Math.min(pageSize, 50);
+  const offPage = Math.min(pageSize, 50);
+  const fatSecretPage = Math.max(1, Math.ceil(pageSize * 0.4));
+
   // Prioritize USDA search for better Foundation Food discovery
   if (sources.usda?.enabled && sources.usda.apiKey) {
     searchPromises.push(
-      searchUsda(app, query, page, pageSize, sources.usda.apiKey) // full page; merged+deduped below
+      searchUsda(app, query, page, usdaPage, sources.usda.apiKey) // right-sized slice; merged+deduped below
     );
   }
 
@@ -314,7 +322,7 @@ export async function searchAllSources(
   if (sources.openFoodFacts?.enabled !== false) {
     // Default to enabled
     searchPromises.push(
-      searchOpenFoodFactsUnified(app, query, page, pageSize, userLocale) // full page; merged+deduped below
+      searchOpenFoodFactsUnified(app, query, page, offPage, userLocale) // right-sized slice; merged+deduped below
     );
   }
 
@@ -325,7 +333,7 @@ export async function searchAllSources(
         app,
         query,
         page,
-        Math.ceil(pageSize * 0.5), // half page; merged+deduped below
+        fatSecretPage, // smaller slice; FatSecret results overlap heavily with USDA/OFF
         sources.fatSecret.apiKey,
         sources.fatSecret.apiSecret
       )

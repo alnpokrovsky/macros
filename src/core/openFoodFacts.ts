@@ -427,26 +427,40 @@ export async function searchOpenFoodFacts(
       // If direct lookup fails, fall through to text search across instances
     }
 
-    // Use multiple search approaches across different instances for better results
+    // Use the CGI endpoint as the primary source. It already covers the full
+    // global catalog through the world instance, so running the v2 endpoint in
+    // parallel mostly duplicated results while doubling the request count. Fall
+    // back to v2 only when CGI returns too few results, keeping the common case
+    // to a single request.
     const languageCode = getOffLanguageCode(userLocale);
 
-    // Try both CGI and v2 APIs across multiple instances
-    const [cgiResults, v2Results] = await Promise.all([
-      searchOpenFoodFactsCGI(app, query, page, Math.ceil(pageSize * 0.7), languageCode),
-      searchOpenFoodFactsV2(app, query, page, Math.ceil(pageSize * 0.3), languageCode),
-    ]);
+    const cgiResults = await searchOpenFoodFactsCGI(app, query, page, pageSize, languageCode);
 
-    // Combine and deduplicate results
-    const allResults = [...cgiResults, ...v2Results];
-    const uniqueResults = new Map<string, OffFoodResult>();
+    let mergedResults = cgiResults;
 
-    allResults.forEach((result) => {
-      if (!uniqueResults.has(result.code)) {
-        uniqueResults.set(result.code, result);
-      }
-    });
+    if (cgiResults.length < Math.ceil(pageSize * 0.5)) {
+      const v2Results = await searchOpenFoodFactsV2(
+        app,
+        query,
+        page,
+        pageSize - cgiResults.length,
+        languageCode
+      );
 
-    const mergedResults = Array.from(uniqueResults.values());
+      // Combine and deduplicate results by product code.
+      const uniqueResults = new Map<string, OffFoodResult>();
+      cgiResults.forEach((result) => {
+        if (!uniqueResults.has(result.code)) {
+          uniqueResults.set(result.code, result);
+        }
+      });
+      v2Results.forEach((result) => {
+        if (!uniqueResults.has(result.code)) {
+          uniqueResults.set(result.code, result);
+        }
+      });
+      mergedResults = Array.from(uniqueResults.values());
+    }
 
     // Sort by data quality and completeness
     mergedResults.sort((a, b) => {

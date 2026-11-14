@@ -1147,6 +1147,7 @@ export class NutritionalSettingTab extends PluginSettingTab {
         toggle.setValue(this.plugin.settings.openFoodFactsEnabled).onChange(async (value) => {
           this.plugin.settings.openFoodFactsEnabled = value;
           await this.plugin.saveSettings();
+          this.plugin.clearSearchCaches();
           window.setTimeout(() => this.display(), 100);
         })
       );
@@ -1173,6 +1174,7 @@ export class NutritionalSettingTab extends PluginSettingTab {
           .onChange(async (value: string) => {
             this.plugin.settings.openFoodFactsLanguage = value;
             await this.plugin.saveSettings();
+            this.plugin.clearSearchCaches();
           });
       });
 
@@ -1189,6 +1191,7 @@ export class NutritionalSettingTab extends PluginSettingTab {
           .onChange(async (value: 'all' | 'medium' | 'high') => {
             this.plugin.settings.openFoodFactsDataQualityFilter = value;
             await this.plugin.saveSettings();
+            this.plugin.clearSearchCaches();
           });
       });
 

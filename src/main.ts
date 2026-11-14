@@ -38,6 +38,12 @@ export default class MacrosPlugin extends Plugin {
   // Track DOM event listeners separately
   private domEventListeners: Array<{ unbind: () => void }> = [];
 
+  // Live search modals that cache results; used to invalidate caches when
+  // Open Food Facts settings change (language, data-quality filter, enabled).
+  // Typed structurally (no import of LiveFoodSearchModal) to avoid a circular
+  // import: LiveSearchModal.ts already imports MacrosPlugin from main.ts.
+  private searchModals: Set<{ clearSearchCache(): void }> = new Set();
+
   /**
    * Plugin lifecycle: load
    */
@@ -213,5 +219,26 @@ export default class MacrosPlugin extends Plugin {
 
   async redrawAllMacrocalc() {
     return this.refreshManager.refreshAllMacroscalc();
+  }
+
+  /** Register a live-search modal so its result cache can be invalidated when
+   *  Open Food Facts settings change. Accepts any object with clearSearchCache()
+   *  to avoid importing LiveFoodSearchModal (circular import). */
+  registerSearchModal(modal: { clearSearchCache(): void }): void {
+    this.searchModals.add(modal);
+  }
+
+  /** Unregister a live-search modal (e.g. on close). */
+  unregisterSearchModal(modal: { clearSearchCache(): void }): void {
+    this.searchModals.delete(modal);
+  }
+
+  /** Clear the result cache of every open live-search modal. Called when
+   *  Open Food Facts settings (language, data-quality filter, enabled) change
+   *  so cached results are not served stale. */
+  clearSearchCaches(): void {
+    for (const modal of this.searchModals) {
+      modal.clearSearchCache();
+    }
   }
 }
