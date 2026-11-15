@@ -40,6 +40,10 @@ export class LiveFoodSearchModal extends Modal {
   private resultsContainer: HTMLElement;
   private loadingIndicator: HTMLElement;
   private noResultsMessage: HTMLElement;
+  private errorMessage: HTMLElement;
+  private errorTextEl: HTMLSpanElement;
+  private errorRetryButton?: HTMLElement;
+  private lastSearchTerm: string = '';
   private searchTimeout: number | null = null;
   private maxResults = 50;
   // Debounce delay for keystroke-driven search (ms). Tunable so it can be
@@ -159,6 +163,7 @@ export class LiveFoodSearchModal extends Modal {
     this.createTabs();
     this.createSearchBarWithBarcode();
     this.createLoadingIndicator();
+    this.createErrorMessage();
     this.createResultsContainer();
     this.createNoResultsMessage();
 
@@ -357,6 +362,9 @@ export class LiveFoodSearchModal extends Modal {
 
     this.currentTab = tab;
 
+    // Clear any error state when switching tabs
+    this.hideError();
+
     // Update tab visual states
     this.availableTabs.forEach((tabKey) => {
       const tabElement = this.getTabElement(tabKey);
@@ -506,6 +514,9 @@ export class LiveFoodSearchModal extends Modal {
       return;
     }
 
+    this.lastSearchTerm = barcode;
+
+    this.hideError();
     this.loadingIndicator.classList.remove('is-hidden');
     this.noResultsMessage.classList.add('is-hidden');
     this.isSearching = true;
@@ -567,12 +578,11 @@ export class LiveFoodSearchModal extends Modal {
     } catch (error) {
       this.plugin.logger.error('Barcode search error:', error);
       this.loadingIndicator.classList.add('is-hidden');
-      new Notice(t('barcode.errors.apiError', { error: (error as Error).message }));
+      this.showError(t('food.search.error.fetchFailed'));
+      new Notice(t('barcode.errors.apiError'));
 
       // Reset for manual search
       this.isBarcodeSearch = false;
-      this.noResultsMessage.textContent = `Barcode search failed: ${(error as Error).message}`;
-      this.noResultsMessage.classList.remove('is-hidden');
     } finally {
       this.isSearching = false;
     }
@@ -598,6 +608,58 @@ export class LiveFoodSearchModal extends Modal {
     });
   }
 
+  private createErrorMessage(): void {
+    const container = this.contentEl.createDiv({
+      cls: 'search-error-message macros-search-error is-hidden',
+    });
+
+    container.createSpan({
+      cls: 'search-error-label',
+      text: `${t('food.search.error.displayError')} `,
+    });
+
+    this.errorTextEl = container.createSpan({
+      cls: 'search-error-text',
+    });
+
+    this.errorRetryButton = container.createEl('button', {
+      cls: 'mod-button search-error-retry',
+      text: t('food.search.error.retry'),
+    });
+
+    this.errorRetryButton.addClass('is-hidden');
+
+    this.component.registerDomEvent(this.errorRetryButton, 'click', () => {
+      const term = this.lastSearchTerm.trim();
+      if (term) {
+        this.hideError();
+        this.loadingIndicator.classList.remove('is-hidden');
+        if (this.isBarcodeSearch) {
+          void this.performBarcodeSearch(term);
+        } else {
+          void this.performSearch(term);
+        }
+      }
+    });
+
+    this.errorMessage = container;
+  }
+
+  private showError(message: string): void {
+    if (!this.errorMessage || !this.errorTextEl) return;
+    this.errorTextEl.textContent = message;
+    this.errorMessage.classList.remove('is-hidden');
+    this.errorRetryButton.removeClass('is-hidden');
+    this.loadingIndicator.classList.add('is-hidden');
+    this.noResultsMessage.classList.add('is-hidden');
+    this.resultsContainer.empty();
+  }
+
+  private hideError(): void {
+    if (!this.errorMessage) return;
+    this.errorMessage.classList.add('is-hidden');
+  }
+
   handleSearchInput = () => {
     const searchTerm = this.searchInput.value.trim();
 
@@ -617,6 +679,7 @@ export class LiveFoodSearchModal extends Modal {
     }
 
     this.selectedIndex = -1;
+    this.hideError();
 
     if (!searchTerm) {
       this.resultsContainer.empty();
@@ -702,6 +765,12 @@ export class LiveFoodSearchModal extends Modal {
     }
 
     this.isSearching = true;
+    this.lastSearchTerm = searchTerm;
+
+    // Hide any previous error and show loading indicator
+    this.hideError();
+    this.loadingIndicator.classList.remove('is-hidden');
+    this.noResultsMessage.classList.add('is-hidden');
 
     try {
       if (!this.plugin) {
@@ -776,6 +845,7 @@ export class LiveFoodSearchModal extends Modal {
       }
 
       this.loadingIndicator.classList.add('is-hidden');
+      this.hideError();
       this.renderResults(requestSearchTerm);
       this.storeResultsInCache(requestSearchTerm);
 
@@ -793,6 +863,7 @@ export class LiveFoodSearchModal extends Modal {
         this.plugin.logger.error('Error fetching food data:', error);
       }
       this.loadingIndicator.classList.add('is-hidden');
+      this.showError(t('food.search.error.fetchFailed'));
       new Notice(t('food.search.error.fetchFailed'));
     } finally {
       this.isSearching = false;
@@ -1277,7 +1348,7 @@ export class LiveFoodSearchModal extends Modal {
           return true; // Close modal
         } catch (error) {
           this.plugin?.logger.error('Error saving food file:', error);
-          new Notice(`Error saving food item: ${(error as Error).message}`);
+          new Notice(t('food.search.error.saveFailed'));
           return false; // Keep modal open
         }
       },
@@ -1920,7 +1991,8 @@ class FileNameModal extends Modal {
         this.close();
       }
     } catch (error) {
-      new Notice(`Error: ${(error as Error).message}`);
+      this.plugin?.logger.error('Error saving food item:', error);
+      new Notice(t('food.search.error.saveFailed'));
     } finally {
       // Re-enable button
       this.isSubmitting = false;

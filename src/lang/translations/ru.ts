@@ -385,6 +385,9 @@ export const ruTranslations: LocaleData = {
       },
       error: {
         fetchFailed: 'Не удалось получить результаты поиска. Попробуйте ещё раз.',
+        displayError: 'Ошибка поиска:',
+        retry: 'Повторить',
+        saveFailed: 'Не удалось сохранить продукт. Попробуйте ещё раз.',
       },
     },
     entry: {

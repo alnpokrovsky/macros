@@ -379,6 +379,9 @@ export const enTranslations: LocaleData = {
       },
       error: {
         fetchFailed: 'Failed to fetch search results. Please try again.',
+        displayError: 'Search failed:',
+        retry: 'Try again',
+        saveFailed: 'Failed to save food item. Please try again.',
       },
     },
     entry: {

@@ -354,6 +354,9 @@ export const zhCNTranslations: LocaleData = {
       },
       error: {
         fetchFailed: '获取搜索结果失败。请重试。',
+        displayError: '搜索失败：',
+        retry: '重试',
+        saveFailed: '保存食物失败。请重试。',
       },
     },
     entry: {

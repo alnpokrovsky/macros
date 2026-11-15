@@ -392,6 +392,9 @@ export const esTranslations: LocaleData = {
       },
       error: {
         fetchFailed: 'Error al obtener resultados de búsqueda. Por favor inténtalo de nuevo.',
+        displayError: 'Búsqueda fallida:',
+        retry: 'Intentar de nuevo',
+        saveFailed: 'Error al guardar el alimento. Inténtalo de nuevo.',
       },
     },
     entry: {
