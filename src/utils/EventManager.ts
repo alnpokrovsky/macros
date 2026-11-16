@@ -23,14 +23,8 @@ export class EventManager {
    */
   registerDomEvent(el: HTMLElement, type: string, handler: EventListener): void {
     try {
-      // If plugin provides registerDomListener, use that for global cleanup
-      if (this.plugin && typeof this.plugin.registerDomListener === 'function') {
-        this.plugin.registerDomListener(el, type, handler);
-      } else {
-        // Otherwise, add the event listener directly and track it
-        el.addEventListener(type, handler);
-        this.eventListeners.push({ el, type, handler });
-      }
+      el.addEventListener(type, handler);
+      this.eventListeners.push({ el, type, handler });
     } catch (error) {
       this.plugin.logger.error(`Error registering ${type} event:`, error);
     }

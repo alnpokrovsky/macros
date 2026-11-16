@@ -907,7 +907,7 @@ export class ContextMenuManager {
         this.plugin.settings.foodTolerances[foodKey] = newTolerance;
       }
 
-      await this.plugin.saveSettings();
+      await this.plugin.saveData(this.plugin.settings);
     } catch (error) {
       this.plugin.logger.error('Error updating tolerance:', error);
       throw error;

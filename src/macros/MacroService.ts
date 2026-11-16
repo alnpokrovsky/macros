@@ -1,20 +1,7 @@
 import MacrosPlugin from '../main';
 import { TFile } from 'obsidian';
 import { parseGrams, processNutritionalData } from '../utils';
-
-// Type definition for MacrosCalc renderers
-interface MacrosCalcRenderer {
-  el: HTMLElement;
-  getIds: () => string[];
-  render: (
-    aggregate: { calories: number; protein: number; fat: number; carbs: number },
-    breakdown: Array<{
-      id: string;
-      totals: { calories: number; protein: number; fat: number; carbs: number };
-    }>
-  ) => Promise<void>;
-  setNeedsRefresh?: () => void;
-}
+import type { MacrosCalcRenderer } from '../utils/types';
 
 /**
  * MacroService
@@ -24,7 +11,7 @@ interface MacrosCalcRenderer {
  */
 export class MacroService {
   private plugin: MacrosPlugin;
-  private static instance: MacroService;
+  private static instance: MacroService | null = null;
 
   // Tracking for active renderers with proper typing
   _activeMacrosCalcRenderers: Set<MacrosCalcRenderer> = new Set();
@@ -88,56 +75,25 @@ export class MacroService {
   }
 
   /**
-   * Helper method for processors to get consistent calorie calculations
-   * SIMPLIFIED: No multiplier logic
+   * Parse macro block lines and process each food item into its macro data.
+   * Shared by getActualCaloriesFromItems, calculateMacrosFromLinesAsync and
+   * processNutritionalDataFromLines to avoid duplicating the meal/bullet/id line
+   * parsing logic across three methods.
+   *
+   * SIMPLIFIED: No multiplier logic, direct processing.
    */
-  getActualCaloriesFromItems(id: string): number {
-    let total = 0;
-    const macroLines = this.macroTables.get(id);
-    if (!macroLines) return 0;
-
-    let currentMeal = '';
-
-    macroLines.forEach((line) => {
-      if (line.toLowerCase().startsWith('meal:')) {
-        // SIMPLIFIED: Just track meal context, no expansion
-        currentMeal = line.substring(5).trim();
-      } else if (line.startsWith('-') && currentMeal) {
-        // Process meal item
-        const itemText = line.substring(1).trim();
-        const macroData = this.processSingleFoodItem(itemText);
-
-        if (macroData) {
-          total += macroData.calories;
-        }
-      } else if (!line.startsWith('-') && !line.toLowerCase().startsWith('id:')) {
-        // Process individual food item
-        currentMeal = ''; // Reset meal context
-        const macroData = this.processSingleFoodItem(line);
-
-        if (macroData) {
-          total += macroData.calories;
-        }
-      }
-    });
-
-    return total;
-  }
-
-  /**
-   * Calculate macros from lines with promise-based processing
-   * SIMPLIFIED VERSION: No multiplier logic, direct processing
-   */
-  async calculateMacrosFromLinesAsync(
-    lines: string[]
-  ): Promise<{ protein: number; fat: number; carbs: number; calories: number }> {
-    let totalProtein = 0,
-      totalFat = 0,
-      totalCarbs = 0,
-      totalCalories = 0;
-
-    // SIMPLIFIED: No complex merging needed since we handle duplicates at write time
-    this.plugin.logger.debug(`Processing ${lines.length} lines`);
+  private parseAndProcessLines(lines: string[]): {
+    protein: number;
+    fat: number;
+    carbs: number;
+    calories: number;
+  }[] {
+    const results: {
+      protein: number;
+      fat: number;
+      carbs: number;
+      calories: number;
+    }[] = [];
 
     // Track the current meal context
     let currentMeal = '';
@@ -155,10 +111,7 @@ export class MacroService {
         const macroData = this.processSingleFoodItem(itemText);
 
         if (macroData) {
-          totalProtein += macroData.protein;
-          totalFat += macroData.fat;
-          totalCarbs += macroData.carbs;
-          totalCalories += macroData.calories;
+          results.push(macroData);
         }
       } else if (!line.startsWith('-') && !line.toLowerCase().startsWith('id:')) {
         // Regular food item (not under a meal)
@@ -167,23 +120,57 @@ export class MacroService {
         const macroData = this.processSingleFoodItem(line);
 
         if (macroData) {
-          totalProtein += macroData.protein;
-          totalFat += macroData.fat;
-          totalCarbs += macroData.carbs;
-          totalCalories += macroData.calories;
+          results.push(macroData);
         }
       }
     }
 
+    return results;
+  }
+
+  /**
+   * Helper method for processors to get consistent calorie calculations
+   * SIMPLIFIED: No multiplier logic
+   */
+  getActualCaloriesFromItems(id: string): number {
+    const macroLines = this.macroTables.get(id);
+    if (!macroLines) return 0;
+
+    const items = this.parseAndProcessLines(macroLines);
+    return items.reduce((total, item) => total + item.calories, 0);
+  }
+
+  /**
+   * Calculate macros from lines with promise-based processing
+   * SIMPLIFIED VERSION: No multiplier logic, direct processing
+   */
+  async calculateMacrosFromLinesAsync(
+    lines: string[]
+  ): Promise<{ protein: number; fat: number; carbs: number; calories: number }> {
+    // SIMPLIFIED: No complex merging needed since we handle duplicates at write time
+    this.plugin.logger.debug(`Processing ${lines.length} lines`);
+
+    const items = this.parseAndProcessLines(lines);
+
+    const totals = items.reduce(
+      (acc, item) => ({
+        protein: acc.protein + item.protein,
+        fat: acc.fat + item.fat,
+        carbs: acc.carbs + item.carbs,
+        calories: acc.calories + item.calories,
+      }),
+      { protein: 0, fat: 0, carbs: 0, calories: 0 }
+    );
+
     this.plugin.logger.debug(
-      `Final totals: protein=${totalProtein.toFixed(1)}g, fat=${totalFat.toFixed(1)}g, carbs=${totalCarbs.toFixed(1)}g, calories=${totalCalories.toFixed(1)}`
+      `Final totals: protein=${totals.protein.toFixed(1)}g, fat=${totals.fat.toFixed(1)}g, carbs=${totals.carbs.toFixed(1)}g, calories=${totals.calories.toFixed(1)}`
     );
 
     return {
-      protein: parseFloat(totalProtein.toFixed(1)),
-      fat: parseFloat(totalFat.toFixed(1)),
-      carbs: parseFloat(totalCarbs.toFixed(1)),
-      calories: parseFloat(totalCalories.toFixed(1)),
+      protein: parseFloat(totals.protein.toFixed(1)),
+      fat: parseFloat(totals.fat.toFixed(1)),
+      carbs: parseFloat(totals.carbs.toFixed(1)),
+      calories: parseFloat(totals.calories.toFixed(1)),
     };
   }
 
@@ -248,8 +235,6 @@ export class MacroService {
     );
 
     for (const id of ids) {
-      const total = { calories: 0, protein: 0, fat: 0, carbs: 0 };
-
       const tableLines = this.macroTables.get(id);
       if (!tableLines) {
         this.plugin.logger.debug(`No table lines found for ID: ${id}`);
@@ -258,36 +243,17 @@ export class MacroService {
 
       this.plugin.logger.debug(`MacroService processing ${tableLines.length} lines for ID: ${id}`);
 
-      let currentMeal = '';
+      const items = this.parseAndProcessLines(tableLines);
 
-      // SIMPLIFIED: Process lines directly without complex merging
-      for (const line of tableLines) {
-        if (line.toLowerCase().startsWith('meal:')) {
-          currentMeal = line.substring(5).trim();
-        } else if (line.startsWith('-') && currentMeal) {
-          // Process meal item
-          const itemText = line.substring(1).trim();
-          const macroData = this.processSingleFoodItem(itemText);
-
-          if (macroData) {
-            total.protein += macroData.protein;
-            total.fat += macroData.fat;
-            total.carbs += macroData.carbs;
-            total.calories += macroData.calories;
-          }
-        } else if (!line.startsWith('-') && !line.toLowerCase().startsWith('id:')) {
-          // Process individual food item
-          currentMeal = '';
-          const macroData = this.processSingleFoodItem(line);
-
-          if (macroData) {
-            total.protein += macroData.protein;
-            total.fat += macroData.fat;
-            total.carbs += macroData.carbs;
-            total.calories += macroData.calories;
-          }
-        }
-      }
+      const total = items.reduce(
+        (acc, item) => ({
+          protein: acc.protein + item.protein,
+          fat: acc.fat + item.fat,
+          carbs: acc.carbs + item.carbs,
+          calories: acc.calories + item.calories,
+        }),
+        { protein: 0, fat: 0, carbs: 0, calories: 0 }
+      );
 
       this.plugin.logger.debug(
         `MacroService calculated totals for ${id}: calories=${total.calories.toFixed(1)}, protein=${total.protein.toFixed(1)}g, fat=${total.fat.toFixed(1)}g, carbs=${total.carbs.toFixed(1)}g`

@@ -186,7 +186,7 @@ export class MetricsEditModal extends Modal {
     toggle.setAttribute('data-metric-id', metric.id);
 
     // Add toggle click handler
-    this.plugin.registerDomListener(toggle, 'click', () => {
+    this.plugin.registerDomEvent(toggle, 'click', () => {
       const currentConfig = this.workingConfigs.find((c) => c.id === metric.id);
       if (currentConfig) {
         // Toggle the state
@@ -252,11 +252,11 @@ export class MetricsEditModal extends Modal {
       cls: 'btn-primary',
     });
 
-    this.plugin.registerDomListener(cancelButton, 'click', () => {
+    this.plugin.registerDomEvent(cancelButton, 'click', () => {
       this.close();
     });
 
-    this.plugin.registerDomListener(saveButton, 'click', () => {
+    this.plugin.registerDomEvent(saveButton, 'click', () => {
       // Filter out disabled metrics and ensure all enabled metrics have proper config
       const enabledConfigs = this.workingConfigs.filter((config) => config.enabled);
 

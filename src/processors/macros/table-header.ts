@@ -81,7 +81,7 @@ export class TableHeader {
     };
 
     if (this.toggleButton) {
-      this.plugin.registerDomListener(this.toggleButton, 'click', toggleClickHandler);
+      this.plugin.registerDomEvent(this.toggleButton, 'click', toggleClickHandler);
     }
 
     const headerClickHandler = (e: MouseEvent) => {
@@ -103,7 +103,7 @@ export class TableHeader {
       this.toggleDashboardElements(this.isCollapsed);
     };
 
-    this.plugin.registerDomListener(headerContainer, 'click', headerClickHandler);
+    this.plugin.registerDomEvent(headerContainer, 'click', headerClickHandler);
 
     const addBtn = controls.createSpan({
       cls: `${CLASS_NAMES.TABLE.CONTROL_ICON} ${CLASS_NAMES.ICONS.ADD}`,
@@ -116,12 +116,12 @@ export class TableHeader {
 
       if (this.id) {
         new AddToMacrosModal(this.plugin.app, this.plugin, this.id, async () => {
-          await this.plugin.updateMacrosCodeBlock();
+          await this.plugin.dataManager.updateMacrosCodeBlock();
         }).open();
       }
     };
 
-    this.plugin.registerDomListener(addBtn, 'click', addBtnClickHandler);
+    this.plugin.registerDomEvent(addBtn, 'click', addBtnClickHandler);
 
     window.setTimeout(() => {
       this.initializeButtonState();

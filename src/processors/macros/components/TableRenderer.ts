@@ -43,7 +43,7 @@ export class MacrosTableRenderer {
   // Debounced redraw function to prevent multiple consecutive redraws
   private debouncedRedraw = debounce(
     async () => {
-      await this.plugin.forceCompleteReload();
+      await this.plugin.refreshManager.forceCompleteRefresh();
     },
     200,
     true
@@ -134,7 +134,7 @@ export class MacrosTableRenderer {
           this.plugin.logger.debug('Performing full refresh of all views');
 
           // Use the centralized refresh method for a complete refresh
-          await this.plugin.forceCompleteReload();
+          await this.plugin.refreshManager.forceCompleteRefresh();
 
           // Reset the flag
           this.needsFullRefresh = false;
@@ -402,7 +402,7 @@ export class MacrosTableRenderer {
       }
 
       // Use the centralized force complete refresh method
-      await this.plugin.forceCompleteReload();
+      await this.plugin.refreshManager.forceCompleteRefresh();
 
       new Notice('Item updated successfully');
     } catch (error) {
@@ -480,7 +480,7 @@ export class MacrosTableRenderer {
         throw new Error(`Failed to update macros block for ID ${this.id}`);
       }
 
-      await this.plugin.forceCompleteReload();
+      await this.plugin.refreshManager.forceCompleteRefresh();
 
       new Notice('Item removed successfully');
     } catch (error) {

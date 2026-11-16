@@ -16,7 +16,7 @@ export function registerCommands(plugin: MacrosPlugin): void {
     name: 'Force reload all tables',
     callback: async () => {
       new Notice('Forcing complete reload of all macros data...');
-      await plugin.forceCompleteReload();
+      await plugin.refreshManager.forceCompleteRefresh();
       new Notice('Reload complete!');
     },
   });

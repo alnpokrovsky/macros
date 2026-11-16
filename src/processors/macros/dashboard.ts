@@ -130,7 +130,7 @@ export class MacrosDashboard {
       };
 
       if (this.dashboardHeader) {
-        this.plugin.registerDomListener(this.dashboardHeader, 'click', clickHandler);
+        this.plugin.registerDomEvent(this.dashboardHeader, 'click', clickHandler);
       }
     } catch (error) {
       this.plugin.logger.error('Error creating dashboard:', error);

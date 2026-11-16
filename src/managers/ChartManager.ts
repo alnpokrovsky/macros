@@ -196,7 +196,9 @@ export class ChartManager {
       // Process each successful data load
       for (const loadResult of successfulLoads) {
         try {
-          const result = await this.plugin.calculateMacrosFromLinesAsync(loadResult.data);
+          const result = await this.plugin.macroService.calculateMacrosFromLinesAsync(
+            loadResult.data
+          );
           allResults.push({
             id: loadResult.id,
             result: {
@@ -350,7 +352,7 @@ export class ChartManager {
       };
 
       // Use plugin's registerDomListener for proper cleanup
-      this.plugin.registerDomListener(dashboardHeader, 'click', headerClickHandler);
+      this.plugin.registerDomEvent(dashboardHeader, 'click', headerClickHandler);
 
       // Register containers for refresh
       for (const currentId of ids) {
@@ -710,11 +712,12 @@ export class ChartManager {
 
         for (const renderer of this.plugin.dataManager._activeMacrosCalcRenderers) {
           try {
-            renderer.setNeedsRefresh();
+            renderer.setNeedsRefresh?.();
 
             const ids = renderer.getIds();
             this.plugin.logger.debug(`Recalculating for IDs: ${ids.join(',')}`);
-            const { aggregate, breakdown } = this.plugin.processNutritionalDataFromLines(ids);
+            const { aggregate, breakdown } =
+              this.plugin.macroService.processNutritionalDataFromLines(ids);
 
             await renderer.render(aggregate, breakdown);
             this.plugin.logger.debug(`Renderer updated successfully`);

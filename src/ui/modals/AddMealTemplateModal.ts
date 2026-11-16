@@ -25,11 +25,11 @@ export class AddMealTemplateModal extends Modal {
   private component: Component;
 
   // UI elements
-  private mealNameInput: HTMLInputElement;
-  private searchInput: HTMLInputElement;
-  private foodsContainer: HTMLElement;
-  private selectedItemsContainer: HTMLElement;
-  private createButton: HTMLElement;
+  private mealNameInput!: HTMLInputElement;
+  private searchInput!: HTMLInputElement;
+  private foodsContainer!: HTMLElement;
+  private selectedItemsContainer!: HTMLElement;
+  private createButton!: HTMLElement;
 
   // Data
   private newMealName = '';
@@ -476,7 +476,7 @@ export class AddMealTemplateModal extends Modal {
 
     // Add to settings
     this.plugin.settings.mealTemplates.push(newMeal);
-    await this.plugin.saveSettings();
+    await this.plugin.saveData(this.plugin.settings);
 
     new Notice(
       t('notifications.mealTemplateCreated', {
@@ -775,7 +775,7 @@ export class EditMealTemplateModal extends Modal {
         const itemString = `${food.name}:${customServing}g`;
         this.meal.items.push(itemString);
 
-        await this.plugin.saveSettings();
+        await this.plugin.saveData(this.plugin.settings);
         this.updateUI();
 
         new Notice(t('notifications.itemsAdded', { count: '1' }));
@@ -795,7 +795,7 @@ export class EditMealTemplateModal extends Modal {
       return itemName.toLowerCase() !== food.name.toLowerCase();
     });
 
-    await this.plugin.saveSettings();
+    await this.plugin.saveData(this.plugin.settings);
     this.updateUI();
 
     new Notice(`${t('general.remove')} ${food.name}`);
@@ -822,7 +822,7 @@ export class EditMealTemplateModal extends Modal {
           this.meal.items[itemIndex] = `${food.name}:${newServing}g`;
         }
 
-        await this.plugin.saveSettings();
+        await this.plugin.saveData(this.plugin.settings);
         this.updateUI();
 
         new Notice(t('general.success'));
@@ -910,7 +910,7 @@ export class EditMealTemplateModal extends Modal {
     });
 
     this.component.registerDomEvent(this.saveButton, 'click', async () => {
-      await this.plugin.saveSettings();
+      await this.plugin.saveData(this.plugin.settings);
       new Notice(t('notifications.mealTemplateUpdated', { name: this.meal.name }));
       this.close();
 

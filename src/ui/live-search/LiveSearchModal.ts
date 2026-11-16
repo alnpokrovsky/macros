@@ -1,9 +1,10 @@
-import { App, Modal, Notice, Component, normalizePath, TFile, setIcon } from 'obsidian';
+import { App, Modal, Notice, Component, setIcon } from 'obsidian';
+import type { PluginSettings } from '../../settings/StorageService';
+import type { UnifiedFoodResult } from '../../core/search';
 import {
   searchAllSources,
   searchFoundationFoodsOnly,
   searchOpenFoodFactsUnified,
-  UnifiedFoodResult,
 } from '../../core/search';
 import { searchByBarcode, validateBarcodeChecksum } from '../../core/barcodeSearch';
 import { searchFoods } from '../../core/usda';
@@ -17,12 +18,10 @@ import {
   generateSearchVariants,
   FoodDoc,
 } from '../../core/fuseSearch';
-import {
-  MICRONUTRIENT_KEYS,
-  MICRONUTRIENT_MAP,
-  formatMicroAmount,
-} from '../../utils/nutrition/micronutrients';
-import { fetchFatSecretMicronutrients } from '../../core/api';
+import { SearchCacheManager } from './SearchCacheManager';
+import { SearchTabManager } from './SearchTabManager';
+import { FoodFileSaver } from './FoodFileSaver';
+import { SearchRenderer } from './SearchRenderer';
 
 type SearchTab =
   | 'all'
@@ -32,55 +31,56 @@ type SearchTab =
   | 'usda-legacy'
   | 'openfoodfacts';
 
+/**
+ * LiveFoodSearchModal
+ * -------------------
+ * Live food search modal with support for multiple food databases
+ * (FatSecret, USDA, Open Food Facts), barcode scanning, and fuzzy search.
+ *
+ * Responsibilities:
+ * - UI layout and event handling
+ * - Search orchestration (debounce, abort, pagination)
+ * - Coordinating sub-modules: cache, tabs, renderer, file saver
+ *
+ * Extracted modules:
+ * - SearchCacheManager: result caching with TTL/size limits
+ * - SearchTabManager: tab availability and state
+ * - FoodFileSaver: saving food results as markdown files
+ * - SearchRenderer: rendering result items with micronutrient chips
+ */
 export class LiveFoodSearchModal extends Modal {
-  private searchInput: HTMLInputElement;
-  private searchContainer: HTMLElement;
-  private barcodeButton: HTMLElement;
-  private tabsContainer: HTMLElement;
-  private resultsContainer: HTMLElement;
-  private loadingIndicator: HTMLElement;
-  private noResultsMessage: HTMLElement;
-  private errorMessage: HTMLElement;
-  private errorTextEl: HTMLSpanElement;
+  private searchInput!: HTMLInputElement;
+  private searchContainer!: HTMLElement;
+  private barcodeButton!: HTMLElement;
+  private resultsContainer!: HTMLElement;
+  private loadingIndicator!: HTMLElement;
+  private noResultsMessage!: HTMLElement;
+  private errorMessage!: HTMLElement;
+  private errorTextEl!: HTMLSpanElement;
   private errorRetryButton?: HTMLElement;
   private lastSearchTerm: string = '';
   private searchTimeout: number | null = null;
   private maxResults = 50;
-  // Debounce delay for keystroke-driven search (ms). Tunable so it can be
-  // adjusted without touching the search logic.
   private searchDebounceMs = 300;
   private results: UnifiedFoodResult[] = [];
-  private allResults: UnifiedFoodResult[] = []; // Store all results for infinite scroll
+  private allResults: UnifiedFoodResult[] = [];
   private selectedIndex = -1;
   private isSearching = false;
-  private component: Component;
-  private currentTab: SearchTab = 'all';
-  private availableTabs: SearchTab[] = [];
   private currentPage = 0;
   private hasMoreResults = true;
   private isLoadingMore = false;
   private currentSearchTerm = '';
   private scrollHandler?: (event: Event) => void;
   private currentSearchAbortController: AbortController | null = null;
-  private isBarcodeSearch = false; // Track if current search is from barcode
-  // Cache of fetched results keyed by tab+query so re-visiting a tab is instant.
-  private resultCache: Map<
-    string,
-    { results: UnifiedFoodResult[]; page: number; hasMore: boolean; timestamp: number }
-  > = new Map();
+  private isBarcodeSearch = false;
 
-  // Results older than this are considered stale and re-fetched.
-  private static readonly CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
-  // Cap the number of cached queries so the cache cannot grow unboundedly.
-  private static readonly MAX_CACHE_ENTRIES = 50;
+  // Sub-modules
+  private cacheManager: SearchCacheManager;
+  private tabManager: SearchTabManager;
+  private fileSaver: FoodFileSaver;
+  private renderer!: SearchRenderer;
 
-  // Tab elements
-  private allTab?: HTMLElement;
-  private fatSecretTab?: HTMLElement;
-  private usdaBrandedTab?: HTMLElement;
-  private usdaFoundationTab?: HTMLElement;
-  private usdaLegacyTab?: HTMLElement;
-  private openFoodFactsTab?: HTMLElement;
+  private component: Component;
 
   constructor(
     public app: App,
@@ -91,71 +91,20 @@ export class LiveFoodSearchModal extends Modal {
   ) {
     super(app);
     this.component = new Component();
-    this.determineAvailableTabs();
+
+    // Initialize sub-modules
+    this.cacheManager = new SearchCacheManager();
+    this.tabManager = new SearchTabManager(plugin);
+    this.fileSaver = new FoodFileSaver(app, plugin);
 
     // Register with the plugin so Open Food Facts settings changes can
-    // invalidate this modal's result cache (stale-while-revalidate safety net).
+    // invalidate this modal's result cache.
     if (this.plugin) {
       this.plugin.registerSearchModal(this);
     }
   }
 
-  /**
-   * Enhanced tab determination with Open Food Facts support
-   */
-  private determineAvailableTabs(): void {
-    if (!this.plugin) {
-      // Fallback includes Open Food Facts since it doesn't require API keys
-      this.availableTabs = ['openfoodfacts', 'fatsecret'];
-      this.currentTab = 'openfoodfacts';
-      return;
-    }
-
-    const settings = this.plugin.settings;
-    const hasFatSecret =
-      settings.fatSecretEnabled && settings.fatSecretApiKey && settings.fatSecretApiSecret;
-    const hasUsda = settings.usdaEnabled && settings.usdaApiKey;
-    const hasOpenFoodFacts = settings.openFoodFactsEnabled !== false; // Default to enabled
-
-    if (hasFatSecret && hasUsda && hasOpenFoodFacts) {
-      // All three enabled → show All, Foundation, Legacy, Branded, OpenFoodFacts, FatSecret tabs
-      this.availableTabs = [
-        'all',
-        'usda-foundation',
-        'usda-legacy',
-        'usda-branded',
-        'openfoodfacts',
-        'fatsecret',
-      ];
-      this.currentTab = 'all';
-    } else if (hasUsda && hasOpenFoodFacts) {
-      // USDA + Open Food Facts → show Foundation, Legacy, Branded, and OpenFoodFacts tabs
-      this.availableTabs = ['usda-foundation', 'usda-legacy', 'usda-branded', 'openfoodfacts'];
-      this.currentTab = 'usda-foundation';
-    } else if (hasFatSecret && hasOpenFoodFacts) {
-      // FatSecret + Open Food Facts → show OpenFoodFacts, FatSecret, and All tabs
-      this.availableTabs = ['all', 'openfoodfacts', 'fatsecret'];
-      this.currentTab = 'openfoodfacts'; // Prefer OFF since it's free
-    } else if (hasUsda) {
-      // Only USDA → show Foundation, Legacy, and Branded tabs
-      this.availableTabs = ['usda-foundation', 'usda-legacy', 'usda-branded'];
-      this.currentTab = 'usda-foundation';
-    } else if (hasFatSecret) {
-      // Only FatSecret → show FatSecret tab and Open Food Facts if enabled
-      this.availableTabs = hasOpenFoodFacts ? ['openfoodfacts', 'fatsecret'] : ['fatsecret'];
-      this.currentTab = hasOpenFoodFacts ? 'openfoodfacts' : 'fatsecret';
-    } else if (hasOpenFoodFacts) {
-      // Only Open Food Facts → show just Open Food Facts tab
-      this.availableTabs = ['openfoodfacts'];
-      this.currentTab = 'openfoodfacts';
-    } else {
-      // No APIs configured → fallback to Open Food Facts (free)
-      this.availableTabs = ['openfoodfacts'];
-      this.currentTab = 'openfoodfacts';
-    }
-  }
-
-  onOpen() {
+  onOpen(): void {
     const { contentEl } = this;
     contentEl.addClass('live-food-search-modal');
     contentEl.createEl('h2', { text: t('food.search.title'), cls: 'mod-header' });
@@ -164,10 +113,10 @@ export class LiveFoodSearchModal extends Modal {
     this.createSearchBarWithBarcode();
     this.createLoadingIndicator();
     this.createErrorMessage();
-    this.createResultsContainer();
     this.createNoResultsMessage();
+    this.createResultsContainer();
 
-    // Auto-focus search input with a slight delay to ensure proper rendering
+    // Auto-focus search input
     window.setTimeout(() => {
       this.searchInput.focus();
     }, 50);
@@ -176,7 +125,7 @@ export class LiveFoodSearchModal extends Modal {
     this.component.registerDomEvent(this.searchInput, 'keydown', this.handleKeyboardNavigation);
   }
 
-  onClose() {
+  onClose(): void {
     // Clean up search timeout
     if (this.searchTimeout) {
       window.clearTimeout(this.searchTimeout);
@@ -199,59 +148,44 @@ export class LiveFoodSearchModal extends Modal {
     this.component.unload();
     this.contentEl.empty();
 
-    // Unregister from the plugin so its search-modal cache registry
-    // doesn't hold a reference to this closed modal.
+    // Unregister from the plugin
     if (this.plugin) {
       this.plugin.unregisterSearchModal(this);
     }
   }
 
+  /**
+   * Clear cached search results. Called when settings change.
+   */
+  public clearSearchCache(): void {
+    this.cacheManager.clear();
+    this.isBarcodeSearch = false;
+    this.currentSearchTerm = '';
+  }
+
   private createTabs(): void {
-    // Only create tabs if there are multiple available tabs
-    if (this.availableTabs.length <= 1) {
-      return;
-    }
+    if (!this.tabManager.hasMultipleTabs()) return;
 
-    this.tabsContainer = this.contentEl.createDiv({
-      cls: 'search-tabs-container macros-search-tabs',
-    });
+    this.searchContainer
+      .createDiv({
+        cls: 'search-tabs-container macros-search-tabs',
+      })
+      .replaceWith(this.contentEl.createDiv({ cls: 'search-tabs-container macros-search-tabs' }));
 
-    // Fixed: Prefix unused parameter with underscore
-    this.availableTabs.forEach((tabKey, _index) => {
-      const tabElement = this.tabsContainer.createEl('button', {
-        cls: `search-tab macros-search-tab ${tabKey === this.currentTab ? 'active' : ''}`,
+    const tabsContainer = this.contentEl.querySelector('.search-tabs-container');
+
+    this.tabManager.getTabs().forEach((tabKey) => {
+      const tabElement = tabsContainer.createEl('button', {
+        cls: `search-tab macros-search-tab ${tabKey === this.tabManager.getCurrentTab() ? 'active' : ''}`,
         text: this.getTabLabel(tabKey),
       });
-
-      // Store tab references
-      switch (tabKey) {
-        case 'all':
-          this.allTab = tabElement;
-          break;
-        case 'fatsecret':
-          this.fatSecretTab = tabElement;
-          break;
-        case 'usda-branded':
-          this.usdaBrandedTab = tabElement;
-          break;
-        case 'usda-foundation':
-          this.usdaFoundationTab = tabElement;
-          break;
-        case 'usda-legacy':
-          this.usdaLegacyTab = tabElement;
-          break;
-        case 'openfoodfacts':
-          this.openFoodFactsTab = tabElement;
-          break;
-      }
 
       this.component.registerDomEvent(tabElement, 'click', () => {
         this.switchTab(tabKey);
       });
 
-      // Prevent tab from stealing focus
       this.component.registerDomEvent(tabElement, 'mousedown', (e: MouseEvent) => {
-        e.preventDefault(); // Prevent focus from moving away from search input
+        e.preventDefault();
       });
     });
   }
@@ -275,123 +209,41 @@ export class LiveFoodSearchModal extends Modal {
     }
   }
 
-  private getCacheKey(searchTerm: string): string {
-    // Include language and data-quality filter so the cache is self-correcting:
-    // results filtered under different settings are stored under different keys
-    // and never served stale even if settings-change invalidation is missed.
-    const settings = this.plugin?.settings;
-    const language = settings?.openFoodFactsLanguage ?? 'auto';
-    const dataQuality = settings?.openFoodFactsDataQualityFilter ?? 'all';
-    return `${this.currentTab}::${language}::${dataQuality}::${searchTerm.toLowerCase()}`;
-  }
-
-  private storeResultsInCache(searchTerm: string): void {
-    if (!searchTerm) return;
-    this.evictStaleCacheEntries();
-    this.enforceCacheSizeCap();
-
-    this.resultCache.set(this.getCacheKey(searchTerm), {
-      results: this.allResults.slice(),
-      page: this.currentPage,
-      hasMore: this.hasMoreResults,
-      timestamp: Date.now(),
-    });
-  }
-
-  private restoreResultsFromCache(searchTerm: string): boolean {
-    const cached = this.resultCache.get(this.getCacheKey(searchTerm));
-    if (!cached || cached.results.length === 0) return false;
-
-    // Ignore stale entries so callers re-fetch fresh results.
-    if (Date.now() - cached.timestamp > LiveFoodSearchModal.CACHE_TTL_MS) {
-      this.resultCache.delete(this.getCacheKey(searchTerm));
-      return false;
-    }
-
-    this.allResults = cached.results.slice();
-    this.results = this.allResults;
-    this.currentPage = cached.page;
-    this.hasMoreResults = cached.hasMore;
-    this.isBarcodeSearch = false;
-
-    // Rebuild the Fuse index for this tab so subsequent keystrokes filter locally.
-    const foodDocs: FoodDoc[] = this.allResults.map(unifiedResultToFoodDoc);
-    buildFuseIndex(this.currentTab, foodDocs);
-
-    this.loadingIndicator.classList.add('is-hidden');
-    this.renderResults(searchTerm);
-    return true;
-  }
-
-  /** Drop cache entries that have exceeded the TTL. */
-  private evictStaleCacheEntries(): void {
-    const now = Date.now();
-    for (const [key, entry] of this.resultCache.entries()) {
-      if (now - entry.timestamp > LiveFoodSearchModal.CACHE_TTL_MS) {
-        this.resultCache.delete(key);
-      }
-    }
-  }
-
-  /** Cap the cache size by removing the oldest entries. */
-  private enforceCacheSizeCap(): void {
-    if (this.resultCache.size < LiveFoodSearchModal.MAX_CACHE_ENTRIES) return;
-
-    const entries = Array.from(this.resultCache.entries()).sort(
-      (a, b) => a[1].timestamp - b[1].timestamp
-    );
-    const toRemove = entries.slice(0, entries.length - LiveFoodSearchModal.MAX_CACHE_ENTRIES);
-    for (const [key] of toRemove) {
-      this.resultCache.delete(key);
-    }
-  }
-
-  /** Clear all cached search results. Called when settings change so cached
-   *  results (filtered, language-specific, or from a now-disabled source) are
-   *  not served stale after the settings that produced them change. Also
-   *  resets search-mode state so a settings change doesn't leave the modal in
-   *  "barcode mode" when the user next switches tabs. */
-  public clearSearchCache(): void {
-    this.resultCache.clear();
-    this.isBarcodeSearch = false;
-    this.currentSearchTerm = '';
-  }
-
   private switchTab(tab: SearchTab): void {
-    if (tab === this.currentTab) return;
+    if (tab === this.tabManager.getCurrentTab()) return;
 
-    this.currentTab = tab;
-
-    // Clear any error state when switching tabs
+    this.tabManager.setTab(tab);
     this.hideError();
 
     // Update tab visual states
-    this.availableTabs.forEach((tabKey) => {
-      const tabElement = this.getTabElement(tabKey);
-      if (tabElement) {
-        tabElement.classList.toggle('active', tabKey === tab);
-      }
+    this.contentEl.querySelectorAll('.search-tab').forEach((el) => {
+      el.classList.toggle('active', el.textContent === this.getTabLabel(tab));
     });
 
-    // Re-run search with current query if there is one
     const currentQuery = this.searchInput.value.trim();
     if (currentQuery) {
-      // Cancel any in-flight search so it can't overwrite this tab's results.
       if (this.currentSearchAbortController) {
         this.currentSearchAbortController.abort();
         this.currentSearchAbortController = null;
       }
 
-      // Remember whether the previous search was a barcode search before
-      // restoreResultsFromCache() resets the flag.
       const wasBarcodeSearch = this.isBarcodeSearch;
 
-      // Show cached results immediately for instant feedback (stale-while-revalidate).
-      // Fresh results are fetched below and replace the cache once they arrive.
-      // On a first-visit cache miss, clear stale results and show the loading
-      // indicator so the user doesn't see the previous tab's results under the
-      // newly-active tab.
-      const hadCachedResults = this.restoreResultsFromCache(currentQuery);
+      const cacheKey = this.cacheManager.getCacheKey(
+        tab,
+        currentQuery,
+        this.plugin?.settings.openFoodFactsLanguage,
+        this.plugin?.settings.openFoodFactsDataQualityFilter
+      );
+
+      const hadCachedResults = this.cacheManager.restoreResults(cacheKey, {
+        setAllResults: (r) => (this.allResults = r),
+        setResults: (r) => (this.results = r),
+        setPage: (p) => (this.currentPage = p),
+        setHasMore: (h) => (this.hasMoreResults = h),
+        setIsBarcodeSearch: () => (this.isBarcodeSearch = false),
+      });
+
       if (!hadCachedResults) {
         this.results = [];
         this.allResults = [];
@@ -399,7 +251,6 @@ export class LiveFoodSearchModal extends Modal {
         this.noResultsMessage.classList.add('is-hidden');
       }
 
-      // Always fetch fresh results when switching tabs so the data is never stale.
       if (wasBarcodeSearch) {
         void this.performBarcodeSearch(currentQuery);
       } else {
@@ -407,55 +258,44 @@ export class LiveFoodSearchModal extends Modal {
       }
     }
 
-    // Maintain focus on search input after tab switch
     window.setTimeout(() => {
       this.searchInput.focus();
     }, 10);
   }
 
-  private getTabElement(tab: SearchTab): HTMLElement | undefined {
-    switch (tab) {
-      case 'all':
-        return this.allTab;
-      case 'fatsecret':
-        return this.fatSecretTab;
-      case 'usda-branded':
-        return this.usdaBrandedTab;
-      case 'usda-foundation':
-        return this.usdaFoundationTab;
-      case 'usda-legacy':
-        return this.usdaLegacyTab;
-      case 'openfoodfacts':
-        return this.openFoodFactsTab;
-      default:
-        return undefined;
-    }
+  private hideError(): void {
+    if (!this.errorMessage) return;
+    this.errorMessage.classList.add('is-hidden');
   }
 
-  /**
-   * Enhanced search bar with barcode scanner button using Obsidian's setIcon API
-   */
+  private showError(message: string): void {
+    if (!this.errorMessage || !this.errorTextEl) return;
+    this.errorTextEl.textContent = message;
+    this.errorMessage.classList.remove('is-hidden');
+    if (this.errorRetryButton) {
+      this.errorRetryButton.removeClass('is-hidden');
+    }
+    this.loadingIndicator.classList.add('is-hidden');
+    this.noResultsMessage.classList.add('is-hidden');
+    this.resultsContainer.empty();
+  }
+
   private createSearchBarWithBarcode(): void {
     this.searchContainer = this.contentEl.createDiv({
       cls: 'search-container macros-search-container with-barcode',
     });
 
-    // Search input
     this.searchInput = this.searchContainer.createEl('input', {
       type: 'text',
       placeholder: t('food.search.placeholder'),
       cls: 'live-search-input',
     });
 
-    // Barcode scanner button
     this.barcodeButton = this.searchContainer.createEl('button', {
       cls: 'barcode-scanner-button',
-      attr: {
-        'aria-label': 'Scan barcode',
-      },
+      attr: { 'aria-label': 'Scan barcode' },
     });
 
-    // Use Obsidian's setIcon API to add the barcode icon
     setIcon(this.barcodeButton, 'barcode');
 
     this.component.registerDomEvent(this.barcodeButton, 'click', () => {
@@ -463,11 +303,7 @@ export class LiveFoodSearchModal extends Modal {
     });
   }
 
-  /**
-   * Open barcode scanner modal
-   */
   private openBarcodeScanner(): void {
-    // Fixed: Add null check instead of non-null assertion
     if (!this.plugin) {
       new Notice('Plugin context not available for barcode scanning');
       return;
@@ -482,32 +318,22 @@ export class LiveFoodSearchModal extends Modal {
     scannerModal.open();
   }
 
-  /**
-   * Handle barcode scan result
-   */
   async handleBarcodeScanned(barcode: string): Promise<void> {
-    // Validate barcode
     if (!validateBarcodeChecksum(barcode)) {
       new Notice(t('barcode.manual.checksumWarning', { code: barcode }));
     }
 
-    // Set the barcode in search input
     this.searchInput.value = barcode;
     this.isBarcodeSearch = true;
 
-    // Perform barcode-specific search
     await this.performBarcodeSearch(barcode);
 
-    // Focus back on input for potential manual editing
     window.setTimeout(() => {
       this.searchInput.focus();
       this.searchInput.select();
     }, 100);
   }
 
-  /**
-   * Perform barcode-specific search with proper result handling
-   */
   private async performBarcodeSearch(barcode: string): Promise<void> {
     if (!this.plugin) {
       new Notice('Plugin context not available for barcode search');
@@ -521,7 +347,6 @@ export class LiveFoodSearchModal extends Modal {
     this.noResultsMessage.classList.add('is-hidden');
     this.isSearching = true;
 
-    // Clear previous results
     this.resultsContainer.empty();
     this.results = [];
     this.allResults = [];
@@ -529,7 +354,6 @@ export class LiveFoodSearchModal extends Modal {
     try {
       const settings = this.plugin.settings;
 
-      // Configure sources for barcode search
       const sources = {
         openFoodFacts: { enabled: settings.openFoodFactsEnabled !== false },
         usda:
@@ -538,36 +362,45 @@ export class LiveFoodSearchModal extends Modal {
             : undefined,
       };
 
-      // Get user's locale
       const userLocale = this.plugin.i18nManager?.getCurrentLocale() || 'en';
 
-      // Search by barcode
       const barcodeResults = await searchByBarcode(this.app, barcode, sources, userLocale);
 
-      // Properly set the results
       this.allResults = barcodeResults;
       this.results = barcodeResults;
-      this.hasMoreResults = false; // Barcode search is typically exact match
-      this.currentSearchTerm = barcode; // Set current search term
+      this.hasMoreResults = false;
+      this.currentSearchTerm = barcode;
 
       this.loadingIndicator.classList.add('is-hidden');
 
       if (barcodeResults.length > 0) {
-        // Build Fuse index for barcode results
         const foodDocs: FoodDoc[] = barcodeResults.map(unifiedResultToFoodDoc);
-        buildFuseIndex(this.currentTab, foodDocs);
+        buildFuseIndex(this.tabManager.getCurrentTab(), foodDocs);
 
-        // Call renderResults with the barcode as search term
-        this.renderResults(barcode);
+        this.renderer.renderResults(
+          barcode,
+          this.results,
+          this.isBarcodeSearch,
+          this.selectedIndex,
+          (food) => void this.handleFoodSelection(food),
+          (index) => {
+            this.selectedIndex = index;
+            this.renderer.highlightSelectedResult(index, () => {});
+            this.renderer.scrollSelectedIntoView(index);
+          }
+        );
         new Notice(
-          t('barcode.scanner.foundResults', { count: barcodeResults.length, code: barcode })
+          t('barcode.scanner.foundResults', {
+            count: barcodeResults.length,
+            code: barcode,
+          })
         );
       } else {
-        // If no barcode results, show no results message
-        this.noResultsMessage.textContent = t('barcode.scanner.noResults', { code: barcode });
+        this.noResultsMessage.textContent = t('barcode.scanner.noResults', {
+          code: barcode,
+        });
         this.noResultsMessage.classList.remove('is-hidden');
 
-        // Clear search input and reset for text search after a delay
         window.setTimeout(() => {
           this.searchInput.value = '';
           this.isBarcodeSearch = false;
@@ -580,8 +413,6 @@ export class LiveFoodSearchModal extends Modal {
       this.loadingIndicator.classList.add('is-hidden');
       this.showError(t('food.search.error.fetchFailed'));
       new Notice(t('barcode.errors.apiError'));
-
-      // Reset for manual search
       this.isBarcodeSearch = false;
     } finally {
       this.isSearching = false;
@@ -592,19 +423,6 @@ export class LiveFoodSearchModal extends Modal {
     this.loadingIndicator = this.contentEl.createDiv({
       cls: 'loading-indicator macros-loading-indicator is-hidden',
       text: t('food.search.searching'),
-    });
-  }
-
-  private createResultsContainer(): void {
-    this.resultsContainer = this.contentEl.createDiv({
-      cls: 'results-container macros-results-container',
-    });
-  }
-
-  private createNoResultsMessage(): void {
-    this.noResultsMessage = this.contentEl.createDiv({
-      cls: 'no-results-message is-hidden',
-      text: t('food.search.noResults'),
     });
   }
 
@@ -645,25 +463,24 @@ export class LiveFoodSearchModal extends Modal {
     this.errorMessage = container;
   }
 
-  private showError(message: string): void {
-    if (!this.errorMessage || !this.errorTextEl) return;
-    this.errorTextEl.textContent = message;
-    this.errorMessage.classList.remove('is-hidden');
-    this.errorRetryButton.removeClass('is-hidden');
-    this.loadingIndicator.classList.add('is-hidden');
-    this.noResultsMessage.classList.add('is-hidden');
-    this.resultsContainer.empty();
+  private createNoResultsMessage(): void {
+    this.noResultsMessage = this.contentEl.createDiv({
+      cls: 'no-results-message is-hidden',
+      text: t('food.search.noResults'),
+    });
   }
 
-  private hideError(): void {
-    if (!this.errorMessage) return;
-    this.errorMessage.classList.add('is-hidden');
+  private createResultsContainer(): void {
+    this.resultsContainer = this.contentEl.createDiv({
+      cls: 'results-container macros-results-container',
+    });
+
+    this.renderer = new SearchRenderer(this.resultsContainer);
   }
 
   handleSearchInput = () => {
     const searchTerm = this.searchInput.value.trim();
 
-    // Reset barcode search flag when user starts typing
     if (!this.isBarcodeSearch || searchTerm !== this.currentSearchTerm) {
       this.isBarcodeSearch = false;
     }
@@ -672,7 +489,6 @@ export class LiveFoodSearchModal extends Modal {
       window.clearTimeout(this.searchTimeout);
     }
 
-    // Cancel any ongoing search
     if (this.currentSearchAbortController) {
       this.currentSearchAbortController.abort();
       this.currentSearchAbortController = null;
@@ -689,10 +505,21 @@ export class LiveFoodSearchModal extends Modal {
     }
 
     // Use Fuse search if we have results indexed for current tab
-    const fuseResults = fuseSearch(this.currentTab, searchTerm);
+    const fuseResults = fuseSearch(this.tabManager.getCurrentTab(), searchTerm);
     if (fuseResults.length > 0) {
       this.results = fuseResults;
-      this.renderResults(searchTerm);
+      this.renderer.renderResults(
+        searchTerm,
+        this.results,
+        this.isBarcodeSearch,
+        this.selectedIndex,
+        (food) => void this.handleFoodSelection(food),
+        (index) => {
+          this.selectedIndex = index;
+          this.renderer.highlightSelectedResult(index, () => {});
+          this.renderer.scrollSelectedIntoView(index);
+        }
+      );
       return;
     }
 
@@ -702,7 +529,6 @@ export class LiveFoodSearchModal extends Modal {
     this.searchTimeout = window.setTimeout(() => {
       const currentSearchTerm = this.searchInput.value.trim();
       if (currentSearchTerm === searchTerm) {
-        // Detect if this looks like a barcode (all numbers, 8-14 digits)
         if (/^\d{8,14}$/.test(searchTerm)) {
           this.isBarcodeSearch = true;
           void this.performBarcodeSearch(searchTerm);
@@ -719,55 +545,27 @@ export class LiveFoodSearchModal extends Modal {
     if (event.key === 'ArrowDown') {
       event.preventDefault();
       this.selectedIndex = (this.selectedIndex + 1) % this.results.length;
-      this.highlightSelectedResult();
-      this.scrollToSelectedResult();
+      this.renderer.highlightSelectedResult(this.selectedIndex, () => {});
+      this.renderer.scrollSelectedIntoView(this.selectedIndex);
     } else if (event.key === 'ArrowUp') {
       event.preventDefault();
       this.selectedIndex = (this.selectedIndex - 1 + this.results.length) % this.results.length;
-      this.highlightSelectedResult();
-      this.scrollToSelectedResult();
+      this.renderer.highlightSelectedResult(this.selectedIndex, () => {});
+      this.renderer.scrollSelectedIntoView(this.selectedIndex);
     } else if (event.key === 'Enter' && this.selectedIndex >= 0) {
       event.preventDefault();
       void this.handleFoodSelection(this.results[this.selectedIndex]);
     }
   };
 
-  highlightSelectedResult() {
-    this.resultsContainer.querySelectorAll('.food-result-item').forEach((item, index) => {
-      if (index === this.selectedIndex) {
-        item.addClass('highlighted-result');
-      } else {
-        item.removeClass('highlighted-result');
-      }
-    });
-  }
-
-  scrollToSelectedResult() {
-    const selectedElement = this.resultsContainer.querySelector('.highlighted-result');
-    if (selectedElement) {
-      selectedElement.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    }
-  }
-
-  /**
-   * Enhanced search with Fuse.js integration and fallback variants
-   */
-  async performSearch(searchTerm: string) {
-    // Create new abort controller for this search
+  async performSearch(searchTerm: string): Promise<void> {
     this.currentSearchAbortController = new AbortController();
     const searchAbortSignal = this.currentSearchAbortController.signal;
-
-    // Store the search term at the start of the request
     const requestSearchTerm = searchTerm;
-
-    if (this.isSearching) {
-      // If already searching, the abort controller above will cancel the previous request
-    }
 
     this.isSearching = true;
     this.lastSearchTerm = searchTerm;
 
-    // Hide any previous error and show loading indicator
     this.hideError();
     this.loadingIndicator.classList.remove('is-hidden');
     this.noResultsMessage.classList.add('is-hidden');
@@ -777,12 +575,8 @@ export class LiveFoodSearchModal extends Modal {
         throw new Error('Plugin context not available');
       }
 
-      // Check if search was aborted before making the request
-      if (searchAbortSignal.aborted) {
-        return;
-      }
+      if (searchAbortSignal.aborted) return;
 
-      // Validate that search term still matches current input
       const currentInputValue = this.searchInput.value.trim();
       if (currentInputValue !== requestSearchTerm) {
         this.plugin.logger.debug(
@@ -791,25 +585,18 @@ export class LiveFoodSearchModal extends Modal {
         return;
       }
 
-      // Fixed: Use proper typing instead of any
       const settings = this.plugin.settings;
 
-      // Reset for new search
       this.currentPage = 0;
       this.hasMoreResults = true;
       this.allResults = [];
 
       let newResults: UnifiedFoodResult[] = [];
 
-      // Check if search was aborted before processing results
-      if (searchAbortSignal.aborted) {
-        return;
-      }
+      if (searchAbortSignal.aborted) return;
 
-      // Try primary search first
       newResults = await this.performApiSearch(requestSearchTerm, settings, searchAbortSignal);
 
-      // If no results, try search variants (singular/plural)
       if (newResults.length === 0) {
         const variants = generateSearchVariants(requestSearchTerm);
 
@@ -825,7 +612,6 @@ export class LiveFoodSearchModal extends Modal {
         }
       }
 
-      // Final validation before showing results
       const finalInputValue = this.searchInput.value.trim();
       if (finalInputValue !== requestSearchTerm || searchAbortSignal.aborted) {
         this.plugin.logger.debug(
@@ -838,26 +624,32 @@ export class LiveFoodSearchModal extends Modal {
       this.results = newResults;
       this.hasMoreResults = newResults.length > 0;
 
-      // Build Fuse index for the results
       if (newResults.length > 0) {
         const foodDocs: FoodDoc[] = newResults.map(unifiedResultToFoodDoc);
-        buildFuseIndex(this.currentTab, foodDocs);
+        buildFuseIndex(this.tabManager.getCurrentTab(), foodDocs);
       }
 
       this.loadingIndicator.classList.add('is-hidden');
       this.hideError();
-      this.renderResults(requestSearchTerm);
+      this.renderer.renderResults(
+        requestSearchTerm,
+        this.results,
+        this.isBarcodeSearch,
+        this.selectedIndex,
+        (food) => void this.handleFoodSelection(food),
+        (index) => {
+          this.selectedIndex = index;
+          this.renderer.highlightSelectedResult(index, () => {});
+          this.renderer.scrollSelectedIntoView(index);
+        }
+      );
       this.storeResultsInCache(requestSearchTerm);
 
-      // Ensure search input maintains focus after results are rendered
       window.setTimeout(() => {
         this.searchInput.focus();
       }, 10);
     } catch (error) {
-      // Don't show error if search was aborted
-      if (searchAbortSignal.aborted) {
-        return;
-      }
+      if (searchAbortSignal.aborted) return;
 
       if (this.plugin && this.plugin.logger) {
         this.plugin.logger.error('Error fetching food data:', error);
@@ -867,7 +659,6 @@ export class LiveFoodSearchModal extends Modal {
       new Notice(t('food.search.error.fetchFailed'));
     } finally {
       this.isSearching = false;
-      // Clear the abort controller if this search completed normally
       if (
         this.currentSearchAbortController &&
         this.currentSearchAbortController.signal === searchAbortSignal
@@ -877,44 +668,35 @@ export class LiveFoodSearchModal extends Modal {
     }
   }
 
-  /**
-   * Perform the actual API search for a given term
-   */
   private async performApiSearch(
     searchTerm: string,
-    // Fixed: Use proper typing instead of any
-    settings: typeof this.plugin.settings,
-    _searchAbortSignal: AbortSignal
+    settings: PluginSettings,
+    searchAbortSignal: AbortSignal
   ): Promise<UnifiedFoodResult[]> {
     let newResults: UnifiedFoodResult[] = [];
 
-    if (this.currentTab === 'openfoodfacts') {
-      // Open Food Facts only search
+    if (searchAbortSignal.aborted) return newResults;
+
+    if (this.tabManager.getCurrentTab() === 'openfoodfacts') {
       if (settings.openFoodFactsEnabled !== false) {
-        // Check if this is a barcode search first
         const cleanQuery = searchTerm.replace(/\s+/g, '');
         const isBarcodeSearch = /^\d{8,14}$/.test(cleanQuery);
 
         if (isBarcodeSearch) {
-          // Use the barcode search function directly
           const { searchByBarcode } = await import('../../core/barcodeSearch');
 
           const sources = {
             openFoodFacts: { enabled: true },
-            usda: undefined, // Don't search USDA for barcodes when on OFF tab
+            usda: undefined,
           };
 
           const userLocale = this.plugin?.i18nManager?.getCurrentLocale() || 'en';
           newResults = await searchByBarcode(this.app, cleanQuery, sources, userLocale);
         } else {
-          // Regular text search
-          // Get user's locale for localization
           const userLocale = this.plugin?.i18nManager?.getCurrentLocale() || 'en';
           const offLanguage =
             settings.openFoodFactsLanguage === 'auto' ? userLocale : settings.openFoodFactsLanguage;
 
-          // Reuse the shared converter so the OffFoodResult -> UnifiedFoodResult
-          // mapping lives in one place (search.ts) rather than being duplicated here.
           newResults = await searchOpenFoodFactsUnified(
             this.app,
             searchTerm,
@@ -923,7 +705,6 @@ export class LiveFoodSearchModal extends Modal {
             offLanguage
           );
 
-          // Apply data quality filter
           if (settings.openFoodFactsDataQualityFilter !== 'all') {
             newResults = newResults.filter((result) => {
               if (settings.openFoodFactsDataQualityFilter === 'high') {
@@ -936,8 +717,7 @@ export class LiveFoodSearchModal extends Modal {
           }
         }
       }
-    } else if (this.currentTab === 'usda-foundation') {
-      // Foundation only search
+    } else if (this.tabManager.getCurrentTab() === 'usda-foundation') {
       if (settings.usdaEnabled && settings.usdaApiKey) {
         newResults = await searchFoundationFoodsOnly(
           this.app,
@@ -946,8 +726,7 @@ export class LiveFoodSearchModal extends Modal {
           settings.usdaApiKey
         );
       }
-    } else if (this.currentTab === 'usda-branded') {
-      // Branded only search
+    } else if (this.tabManager.getCurrentTab() === 'usda-branded') {
       if (settings.usdaEnabled && settings.usdaApiKey) {
         const usdaResults = await searchFoods(
           this.app,
@@ -973,8 +752,7 @@ export class LiveFoodSearchModal extends Modal {
             raw: item,
           }));
       }
-    } else if (this.currentTab === 'usda-legacy') {
-      // Legacy only search
+    } else if (this.tabManager.getCurrentTab() === 'usda-legacy') {
       if (settings.usdaEnabled && settings.usdaApiKey) {
         const usdaResults = await searchFoods(
           this.app,
@@ -1000,10 +778,8 @@ export class LiveFoodSearchModal extends Modal {
             raw: item,
           }));
       }
-    } else if (this.currentTab === 'fatsecret') {
-      // Search ONLY FatSecret, completely exclude Open Food Facts and USDA
+    } else if (this.tabManager.getCurrentTab() === 'fatsecret') {
       if (settings.fatSecretEnabled && settings.fatSecretApiKey && settings.fatSecretApiSecret) {
-        // Import FatSecret search function directly
         const { searchFatSecret } = await import('../../core/search');
 
         newResults = await searchFatSecret(
@@ -1016,36 +792,26 @@ export class LiveFoodSearchModal extends Modal {
         );
       }
     } else {
-      // Determine which sources to search based on current tab
-      const sources: {
-        fatSecret?: { enabled: boolean; apiKey: string; apiSecret: string };
-        usda?: { enabled: boolean; apiKey: string };
-        openFoodFacts?: { enabled: boolean };
-      } = {};
+      // 'all' tab
+      const sources: Record<string, { enabled: boolean; apiKey?: string; apiSecret?: string }> = {};
 
-      if (this.currentTab === 'all') {
-        // Search all available sources
-        if (settings.fatSecretEnabled && settings.fatSecretApiKey && settings.fatSecretApiSecret) {
-          sources.fatSecret = {
-            enabled: true,
-            apiKey: settings.fatSecretApiKey,
-            apiSecret: settings.fatSecretApiSecret,
-          };
-        }
-        if (settings.usdaEnabled && settings.usdaApiKey) {
-          sources.usda = {
-            enabled: true,
-            apiKey: settings.usdaApiKey,
-          };
-        }
-        if (settings.openFoodFactsEnabled !== false) {
-          sources.openFoodFacts = {
-            enabled: true,
-          };
-        }
+      if (settings.fatSecretEnabled && settings.fatSecretApiKey && settings.fatSecretApiSecret) {
+        sources.fatSecret = {
+          enabled: true,
+          apiKey: settings.fatSecretApiKey,
+          apiSecret: settings.fatSecretApiSecret,
+        };
+      }
+      if (settings.usdaEnabled && settings.usdaApiKey) {
+        sources.usda = {
+          enabled: true,
+          apiKey: settings.usdaApiKey,
+        };
+      }
+      if (settings.openFoodFactsEnabled !== false) {
+        sources.openFoodFacts = { enabled: true };
       }
 
-      // Get user's locale for Open Food Facts
       const userLocale = this.plugin?.i18nManager?.getCurrentLocale() || 'en';
       const offLanguage =
         settings.openFoodFactsLanguage === 'auto' ? userLocale : settings.openFoodFactsLanguage;
@@ -1059,7 +825,6 @@ export class LiveFoodSearchModal extends Modal {
         offLanguage
       );
 
-      // Apply Open Food Facts data quality filter if applicable
       if (settings.openFoodFactsDataQualityFilter !== 'all') {
         newResults = newResults
           .map((result) => {
@@ -1085,547 +850,39 @@ export class LiveFoodSearchModal extends Modal {
     return newResults;
   }
 
-  escapeRegExp(string: string): string {
-    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  }
+  private storeResultsInCache(searchTerm: string): void {
+    if (!searchTerm) return;
 
-  /**
-   * Render a compact micronutrient summary for a result, when the food carries
-   * per-100g micronutrient data. Foods whose source has no recorded
-   * micronutrients (e.g. many Open Food Facts entries, or FatSecret results
-   * before the food is selected) simply render nothing.
-   */
-  private renderMicronutrientSummary(container: HTMLElement, food: UnifiedFoodResult) {
-    const micros = food.micronutrients;
-    if (!micros) return;
-
-    const presentKeys = MICRONUTRIENT_KEYS.filter(
-      (key) => micros[key] != null && Number.isFinite(micros[key]) && micros[key] !== 0
-    );
-    if (presentKeys.length === 0) return;
-
-    const grams = food.gramsServing || 100;
-    const microsDiv = container.createDiv({ cls: 'food-result-micros' });
-    microsDiv.createSpan({
-      cls: 'food-result-micros-label',
-      text: t('food.search.micronutrients', { grams: String(grams) }),
-    });
-
-    const chipsWrap = microsDiv.createDiv({ cls: 'food-result-micros-chips' });
-    for (const key of presentKeys) {
-      const def = MICRONUTRIENT_MAP[key];
-      const label = def ? def.label : key;
-      const unit = def ? def.unit : '';
-      chipsWrap.createSpan({
-        cls: 'food-result-micro-chip',
-        text: `${label} ${formatMicroAmount(micros[key])}${unit}`,
-      });
-    }
-  }
-
-  renderResults(searchTerm: string) {
-    this.resultsContainer.empty();
-
-    if (this.results.length === 0) {
-      this.noResultsMessage.classList.remove('is-hidden');
-      return;
-    }
-
-    this.noResultsMessage.classList.add('is-hidden');
-
-    const normalizedQuery = searchTerm.toLowerCase();
-    const escapedSearchTerm = this.escapeRegExp(searchTerm);
-
-    // For barcode searches, show all results regardless of name matching
-    const resultsToShow = this.isBarcodeSearch
-      ? this.results
-      : this.results.filter((food) => food.name.toLowerCase().includes(normalizedQuery));
-
-    resultsToShow.forEach((food, index) => {
-      const foodDiv = this.resultsContainer.createDiv({
-        cls: `food-result-item ${this.isBarcodeSearch ? 'barcode-result' : ''}`,
-      });
-
-      // Create main content container
-      const contentDiv = foodDiv.createDiv({ cls: 'food-result-content' });
-
-      // Food name with highlighting and brand info
-      const nameDiv = contentDiv.createDiv({ cls: 'food-result-name' });
-      const nameContentDiv = nameDiv.createDiv({ cls: 'food-name-content' });
-
-      // Only highlight text matches for non-barcode searches
-      if (this.isBarcodeSearch) {
-        // For barcode searches, just show the name without highlighting
-        nameContentDiv.createSpan({ text: food.name });
-      } else {
-        // For text searches, highlight matching text
-        const regex = new RegExp(`(${escapedSearchTerm})`, 'gi');
-        const parts = food.name.split(regex);
-
-        parts.forEach((part) => {
-          if (part.toLowerCase() === searchTerm.toLowerCase()) {
-            nameContentDiv.createEl('strong', { text: part });
-          } else if (part) {
-            nameContentDiv.createSpan({ text: part });
-          }
-        });
-      }
-
-      // Add brand name if available
-      if (food.brandName) {
-        nameContentDiv.createSpan({
-          cls: 'food-brand-name',
-          text: ` (${food.brandName})`,
-        });
-      }
-
-      // Create enhanced chips container
-      const chipsDiv = nameDiv.createDiv({ cls: 'food-result-chips' });
-
-      // Add enhanced source chip with more specific labeling
-      let sourceLabel = '';
-      let chipClass = `macros-source-chip macros-source-${food.source}`;
-
-      if (food.source === 'usda') {
-        if (food.isFoundation) {
-          sourceLabel = 'USDA Foundation';
-          chipClass += ' macros-source-foundation';
-        } else if (food.isSrLegacy) {
-          sourceLabel = 'USDA SR Legacy';
-          chipClass += ' macros-source-sr-legacy';
-        } else if (food.isBranded) {
-          sourceLabel = 'USDA Branded';
-          chipClass += ' macros-source-branded';
-        } else {
-          sourceLabel = 'USDA';
-        }
-      } else if (food.source === 'openfoodfacts') {
-        sourceLabel = 'Open Food Facts';
-        chipClass += ' macros-source-openfoodfacts';
-      } else {
-        sourceLabel = t(`food.search.source.${food.source}`);
-      }
-
-      chipsDiv.createSpan({
-        cls: chipClass,
-        text: sourceLabel,
-      });
-
-      // Add quality indicators for different sources
-      if (food.isFoundation) {
-        chipsDiv.createSpan({
-          cls: 'macros-quality-chip macros-foundation-indicator',
-          text: 'High Quality',
-          attr: { title: 'Foundation data is the most reliable and comprehensive USDA data' },
-        });
-      } else if (food.source === 'openfoodfacts') {
-        // Add data quality indicator for Open Food Facts
-        if (food.dataQuality === 'high') {
-          chipsDiv.createSpan({
-            cls: 'macros-quality-chip macros-off-high-quality',
-            text: 'High Quality',
-            attr: { title: 'High quality Open Food Facts data' },
-          });
-        } else if (food.dataQuality === 'medium') {
-          chipsDiv.createSpan({
-            cls: 'macros-quality-chip macros-off-medium-quality',
-            text: 'Medium Quality',
-            attr: { title: 'Medium quality Open Food Facts data' },
-          });
-        }
-
-        // Add nutrition grade if available
-        if (
-          food.nutritionGrade &&
-          ['A', 'B', 'C', 'D', 'E'].includes(food.nutritionGrade.toUpperCase())
-        ) {
-          chipsDiv.createSpan({
-            cls: `macros-nutrition-grade macros-nutrition-grade-${food.nutritionGrade.toLowerCase()}`,
-            text: `Grade ${food.nutritionGrade.toUpperCase()}`,
-            attr: { title: 'Nutri-Score nutrition grade' },
-          });
-        }
-
-        // Add NOVA group indicator if available
-        if (food.novaGroup && food.novaGroup >= 1 && food.novaGroup <= 4) {
-          // Fixed: Removed unused variable assignment
-          chipsDiv.createSpan({
-            cls: `macros-nova-chip macros-nova-${food.novaGroup}`,
-            text: `NOVA ${food.novaGroup}`,
-            attr: { title: 'NOVA food processing classification' },
-          });
-        }
-      }
-
-      // Food description
-      // Fixed: Prefix unused variable with underscore
-      contentDiv.createDiv({
-        cls: 'food-result-description',
-        text: food.description,
-      });
-
-      // Micronutrient summary (only for foods whose source provided per-100g
-      // micronutrient data; many database entries have none recorded).
-      this.renderMicronutrientSummary(contentDiv, food);
-
-      // Add product image for Open Food Facts if available
-      if (food.source === 'openfoodfacts' && food.imageUrl) {
-        const imageDiv = contentDiv.createDiv({ cls: 'food-result-image' });
-        const img = imageDiv.createEl('img', {
-          attr: {
-            src: food.imageUrl,
-            alt: food.name,
-            loading: 'lazy',
-          },
-          cls: 'food-product-image',
-        });
-
-        // Handle image load errors gracefully
-        img.addEventListener('error', () => {
-          imageDiv.addClass('macros-u-hidden');
-        });
-      }
-
-      if (index === this.selectedIndex) {
-        foodDiv.addClass('highlighted-result');
-      }
-
-      this.component.registerDomEvent(foodDiv, 'click', () => {
-        void this.handleFoodSelection(food);
-      });
-
-      this.component.registerDomEvent(foodDiv, 'mouseenter', () => {
-        this.selectedIndex = index;
-        this.highlightSelectedResult();
-      });
-    });
-
-    // Add infinite scroll functionality
-    this.setupInfiniteScroll(searchTerm);
-  }
-
-  private async handleFoodSelection(food: UnifiedFoodResult): Promise<void> {
-    // Check if this is from API search (not already saved food)
-    if (food.source === 'usda' || food.source === 'fatsecret' || food.source === 'openfoodfacts') {
-      await this.promptForFileName(food);
-    } else {
-      // Directly call onSelect for already saved foods
-      this.onSelect(food);
-      this.close();
-    }
-  }
-
-  private async promptForFileName(food: UnifiedFoodResult): Promise<void> {
-    // Create a simple modal for file name input
-    const modal = new FileNameModal(
-      this.app,
-      food.name,
-      food.gramsServing || 100, // Pass the original serving size
-      async (fileName: string, defaultServing?: number) => {
-        // Use the SAME sanitization logic as DataManager
-        const safeFileName = this.sanitizeFileName(fileName);
-
-        // Check if sanitization changed the filename significantly
-        if (safeFileName !== fileName.trim()) {
-          this.plugin?.logger.debug(`Filename sanitized: "${fileName}" -> "${safeFileName}"`);
-        }
-
-        // Check existence using the sanitized filename
-        const existsResult = await this.checkFileExists(safeFileName);
-        if (existsResult.exists) {
-          new Notice(
-            `A food item with the name "${safeFileName}" already exists in your Nutrition folder. Please choose a different name to avoid conflicts.`
-          );
-          return false; // Keep modal open
-        }
-
-        // File name is unique, proceed with saving
-        try {
-          // Pass the ORIGINAL filename and default serving to saveFoodFile
-          await this.saveFoodFile(food, fileName, defaultServing);
-          // Don't call this.onSelect(food) here - saveFoodFile already shows success notice
-          this.close();
-          return true; // Close modal
-        } catch (error) {
-          this.plugin?.logger.error('Error saving food file:', error);
-          new Notice(t('food.search.error.saveFailed'));
-          return false; // Keep modal open
-        }
-      },
-      this.plugin
+    const cacheKey = this.cacheManager.getCacheKey(
+      this.tabManager.getCurrentTab(),
+      searchTerm,
+      this.plugin?.settings.openFoodFactsLanguage,
+      this.plugin?.settings.openFoodFactsDataQualityFilter
     );
 
-    modal.open();
-  }
-
-  // Proper file existence check with normalization
-  private async checkFileExists(fileName: string): Promise<{ exists: boolean; path?: string }> {
-    if (!this.plugin) return { exists: false };
-
-    try {
-      // Use the SAME sanitization logic as DataManager
-      const safeFileName = this.sanitizeFileName(fileName);
-
-      const folder = normalizePath(this.plugin.settings.storageFolder);
-      const filePath = normalizePath(`${folder}/${safeFileName}.md`);
-
-      // Use proper Obsidian API to check file existence
-      const existingFile = this.app.vault.getAbstractFileByPath(filePath);
-
-      // Ensure it's actually a file, not a folder
-      const exists = existingFile instanceof TFile;
-
-      this.plugin.logger.debug(`File existence check: ${safeFileName}.md -> ${exists}`);
-
-      return { exists, path: filePath };
-    } catch (error) {
-      this.plugin.logger.error('Error checking file existence:', error);
-      return { exists: false };
-    }
-  }
-
-  // Helper to sanitize filename - MUST match DataManager.createSafeFileName()
-  private sanitizeFileName(fileName: string): string {
-    return fileName
-      .replace(/[<>:"/\\|?*]/g, '') // Remove invalid filename characters
-      .replace(/\s+/g, ' ') // Normalize spaces
-      .replace(/^\s+|\s+$/g, '') // Trim whitespace
-      .substring(0, 100) // Limit length
-      .replace(/\.$/, ''); // Remove trailing period if present
-  }
-
-  private async saveFoodFile(
-    food: UnifiedFoodResult,
-    fileName: string,
-    defaultServing?: number
-  ): Promise<void> {
-    if (!this.plugin) return;
-
-    // Extract nutrition data from the food result
-    let calories = 0;
-    let protein = 0;
-    let fat = 0;
-    let carbs = 0;
-
-    // For Open Food Facts, we have direct access to nutrition data
-    // Fixed: Use proper typing instead of any
-    if (food.source === 'openfoodfacts' && food.raw && typeof food.raw === 'object') {
-      const offData = food.raw as Record<string, unknown>;
-      calories = (offData.calories as number) || 0;
-      protein = (offData.protein as number) || 0;
-      fat = (offData.fat as number) || 0;
-      carbs = (offData.carbs as number) || 0;
-    } else {
-      // Parse nutrition data from description for other sources
-      if (food.description) {
-        const caloriesMatch = food.description.match(/Calories:\s*(\d+(?:\.\d+)?)/i);
-        const proteinMatch = food.description.match(/Protein:\s*(\d+(?:\.\d+)?)g/i);
-        const fatMatch = food.description.match(/Fat:\s*(\d+(?:\.\d+)?)g/i);
-        const carbsMatch = food.description.match(/Carbs:\s*(\d+(?:\.\d+)?)g/i);
-
-        calories = caloriesMatch ? parseFloat(caloriesMatch[1]) : 0;
-        protein = proteinMatch ? parseFloat(proteinMatch[1]) : 0;
-        fat = fatMatch ? parseFloat(fatMatch[1]) : 0;
-        carbs = carbsMatch ? parseFloat(carbsMatch[1]) : 0;
-      }
-    }
-
-    const servingSize = food.gramsServing || 100;
-
-    // Resolve micronutrients for this food. USDA and Open Food Facts attach
-    // canonical per-100g data to the search result; FatSecret only exposes it
-    // via a detail lookup, so fetch it on demand here.
-    let micronutrients: Record<string, number> = {};
-    if (food.micronutrients && typeof food.micronutrients === 'object') {
-      micronutrients = { ...food.micronutrients };
-    }
-    if (
-      Object.keys(micronutrients).length === 0 &&
-      food.source === 'fatsecret' &&
-      food.raw &&
-      typeof food.raw === 'object'
-    ) {
-      const foodId = (food.raw as Record<string, string>).food_id;
-      const fsKey = this.plugin.settings.fatSecretApiKey?.trim();
-      const fsSecret = this.plugin.settings.fatSecretApiSecret?.trim();
-      if (foodId && fsKey && fsSecret) {
-        try {
-          const fsMicros = await fetchFatSecretMicronutrients(
-            this.app,
-            String(foodId),
-            fsKey,
-            fsSecret
-          );
-          if (fsMicros) micronutrients = fsMicros.micronutrients;
-        } catch (microErr) {
-          this.plugin.logger.error('Error fetching FatSecret micronutrients:', microErr);
-        }
-      }
-    }
-    // Source values are per 100g; rescale to the stored serving size so they
-    // match the macros and the scaling done by extractMicronutrients().
-    if (Object.keys(micronutrients).length > 0 && servingSize !== 100) {
-      const microScale = servingSize / 100;
-      const rescaled: Record<string, number> = {};
-      for (const [k, v] of Object.entries(micronutrients)) rescaled[k] = v * microScale;
-      micronutrients = rescaled;
-    }
-
-    // Create the markdown content
-    const fdcId =
-      food.source === 'usda' && food.raw && typeof food.raw === 'object' && 'fdcId' in food.raw
-        ? String((food.raw as Record<string, string>).fdcId)
-        : '';
-
-    // Sanitize filename for actual file creation
-    const safeFileName = this.sanitizeFileName(fileName);
-
-    let frontmatter = `---
-calories: ${calories}
-protein: ${protein}
-fat: ${fat}
-carbs: ${carbs}
-serving_size: ${servingSize}g${defaultServing ? `\ndefault_serving_size: ${defaultServing}g` : ''}
-source: ${food.source}`;
-
-    // Add source-specific metadata
-    if (food.source === 'usda') {
-      frontmatter += `\nfdc_id: ${fdcId}\ndata_type: ${food.dataType || ''}`;
-    } else if (food.source === 'openfoodfacts') {
-      const offCode =
-        food.raw && typeof food.raw === 'object' && 'code' in food.raw
-          ? String((food.raw as Record<string, string>).code)
-          : '';
-      frontmatter += `\noff_code: ${offCode}`;
-    }
-
-    if (food.brandName) frontmatter += `\nbrand: ${food.brandName}`;
-    if (food.nutritionGrade) frontmatter += `\nnutrition_grade: ${food.nutritionGrade}`;
-    if (food.novaGroup) frontmatter += `\nnova_group: ${food.novaGroup}`;
-    if (food.dataQuality) frontmatter += `\ndata_quality: ${food.dataQuality}`;
-
-    // Add micronutrient keys (read back by extractMicronutrients()).
-    for (const microKey of MICRONUTRIENT_KEYS) {
-      const microValue = micronutrients[microKey];
-      if (microValue == null || !Number.isFinite(microValue) || microValue === 0) continue;
-      frontmatter += `\n${microKey}: ${formatMicroAmount(microValue)}`;
-    }
-
-    frontmatter += `\ncreated: ${new Date().toISOString()}
----
-
-# ${fileName}
-
-${food.description}
-
-## Nutritional Information (per ${servingSize}g)
-- **Calories:** ${calories} kcal
-- **Protein:** ${protein}g
-- **Fat:** ${fat}g
-- **Carbohydrates:** ${carbs}g`;
-
-    // Readable micronutrient breakdown for any nutrients that were resolved.
-    const microKeysPresent = MICRONUTRIENT_KEYS.filter(
-      (k) =>
-        micronutrients[k] != null && Number.isFinite(micronutrients[k]) && micronutrients[k] !== 0
+    this.cacheManager.storeResults(
+      cacheKey,
+      this.allResults,
+      this.currentPage,
+      this.hasMoreResults
     );
-    if (microKeysPresent.length > 0) {
-      frontmatter += `\n\n## Micronutrients (per ${servingSize}g)`;
-      for (const microKey of microKeysPresent) {
-        const def = MICRONUTRIENT_MAP[microKey];
-        const microLabel = def ? def.label : microKey;
-        const microUnit = def ? def.unit : '';
-        frontmatter += `\n- **${microLabel}:** ${formatMicroAmount(micronutrients[microKey])}${microUnit}`;
-      }
-    }
-
-    let sourceText = '';
-    if (food.source === 'usda') {
-      sourceText = 'USDA FoodData Central';
-    } else if (food.source === 'openfoodfacts') {
-      sourceText = 'Open Food Facts (Community Database)';
-    } else {
-      sourceText = 'FatSecret';
-    }
-
-    frontmatter += `\n\n**Source:** ${sourceText}`;
-    if (food.brandName) frontmatter += `\n**Brand:** ${food.brandName}`;
-    if (food.nutritionGrade)
-      frontmatter += `\n**Nutrition Grade:** ${food.nutritionGrade.toUpperCase()} (Nutri-Score)`;
-    if (food.novaGroup) {
-      const novaLabels = [
-        '',
-        'Unprocessed or minimally processed',
-        'Processed culinary ingredients',
-        'Processed foods',
-        'Ultra-processed foods',
-      ];
-      frontmatter += `\n**Processing Level:** NOVA ${food.novaGroup} (${novaLabels[food.novaGroup]})`;
-    }
-    if (defaultServing && defaultServing !== servingSize) {
-      frontmatter += `\n**Default Serving Size:** ${defaultServing}g`;
-    }
-    if (food.categories) frontmatter += `\n**Categories:** ${food.categories}`;
-    if (food.ingredients) frontmatter += `\n\n**Ingredients:** ${food.ingredients}`;
-
-    // Add data quality notice for Open Food Facts
-    if (food.source === 'openfoodfacts' && food.dataQuality !== 'high') {
-      frontmatter += `\n\n> **Note:** This data comes from the Open Food Facts community database. Please verify nutrition information if accuracy is critical for your needs.`;
-    }
-
-    const folderPath = normalizePath(this.plugin.settings.storageFolder);
-
-    // Ensure folder exists
-    const folder = this.app.vault.getFolderByPath(folderPath);
-    if (!folder) {
-      await this.app.vault.createFolder(folderPath);
-    }
-
-    const filePath = normalizePath(`${folderPath}/${safeFileName}.md`);
-
-    try {
-      // Use proper Obsidian API for file creation
-      await this.app.vault.create(filePath, frontmatter);
-
-      let successMessage = `Food item "${fileName}" saved successfully!`;
-      if (defaultServing && defaultServing !== servingSize) {
-        successMessage += ` Default serving: ${defaultServing}g`;
-      }
-      new Notice(successMessage);
-
-      // Update the food object with the saved file name
-      food.name = fileName;
-
-      // Invalidate cache to make new file immediately available
-      this.plugin.dataManager.invalidateFileCache();
-    } catch (error) {
-      if ((error as Error).message?.includes('already exists')) {
-        throw new Error('File already exists. Please choose a different name.');
-      }
-      throw error;
-    }
   }
 
   private setupInfiniteScroll(searchTerm: string): void {
-    // Store current search term
     this.currentSearchTerm = searchTerm;
 
-    // Remove existing scroll listener if it exists
     if (this.scrollHandler) {
       this.resultsContainer.removeEventListener('scroll', this.scrollHandler);
     }
 
-    // Create new scroll handler
-    // Fixed: Prefix unused parameter with underscore
     this.scrollHandler = (_event: Event) => {
       void this.handleScroll();
     };
 
-    // Add new scroll listener
     this.component.registerDomEvent(this.resultsContainer, 'scroll', this.scrollHandler);
   }
 
-  private handleScroll = async () => {
+  private handleScroll = async (): Promise<void> => {
     if (this.isLoadingMore || !this.hasMoreResults || this.isBarcodeSearch) return;
 
     const container = this.resultsContainer;
@@ -1633,7 +890,6 @@ ${food.description}
     const scrollHeight = container.scrollHeight;
     const clientHeight = container.clientHeight;
 
-    // Load more when user scrolls to within 100px of bottom
     if (scrollTop + clientHeight >= scrollHeight - 100) {
       await this.loadMoreResults(this.currentSearchTerm);
     }
@@ -1649,8 +905,7 @@ ${food.description}
       const settings = this.plugin.settings;
       let newResults: UnifiedFoodResult[] = [];
 
-      if (this.currentTab === 'openfoodfacts') {
-        // Load more Open Food Facts results
+      if (this.tabManager.getCurrentTab() === 'openfoodfacts') {
         if (settings.openFoodFactsEnabled !== false) {
           const userLocale = this.plugin.i18nManager?.getCurrentLocale() || 'en';
           const offLanguage =
@@ -1684,12 +939,10 @@ ${food.description}
             raw: item,
           }));
         }
-      } else if (this.currentTab === 'usda-foundation') {
-        // Foundation foods don't typically support pagination well, disable
+      } else if (this.tabManager.getCurrentTab() === 'usda-foundation') {
         this.hasMoreResults = false;
         return;
-      } else if (this.currentTab === 'usda-branded') {
-        // Load more branded results
+      } else if (this.tabManager.getCurrentTab() === 'usda-branded') {
         if (settings.usdaEnabled && settings.usdaApiKey) {
           const usdaResults = await searchFoods(
             this.app,
@@ -1715,8 +968,7 @@ ${food.description}
               raw: item,
             }));
         }
-      } else if (this.currentTab === 'usda-legacy') {
-        // Load more legacy results
+      } else if (this.tabManager.getCurrentTab() === 'usda-legacy') {
         if (settings.usdaEnabled && settings.usdaApiKey) {
           const usdaResults = await searchFoods(
             this.app,
@@ -1742,10 +994,8 @@ ${food.description}
               raw: item,
             }));
         }
-      } else if (this.currentTab === 'fatsecret') {
-        // Load more FatSecret results ONLY
+      } else if (this.tabManager.getCurrentTab() === 'fatsecret') {
         if (settings.fatSecretEnabled && settings.fatSecretApiKey && settings.fatSecretApiSecret) {
-          // Import FatSecret search function directly
           const { searchFatSecret } = await import('../../core/search');
 
           newResults = await searchFatSecret(
@@ -1757,13 +1007,9 @@ ${food.description}
             settings.fatSecretApiSecret
           );
         }
-      } else if (this.currentTab === 'all') {
-        // Load more from all sources
-        const sources: {
-          fatSecret?: { enabled: boolean; apiKey: string; apiSecret: string };
-          usda?: { enabled: boolean; apiKey: string };
-          openFoodFacts?: { enabled: boolean };
-        } = {};
+      } else if (this.tabManager.getCurrentTab() === 'all') {
+        const sources: Record<string, { enabled: boolean; apiKey?: string; apiSecret?: string }> =
+          {};
 
         if (settings.fatSecretEnabled && settings.fatSecretApiKey && settings.fatSecretApiSecret) {
           sources.fatSecret = {
@@ -1779,9 +1025,7 @@ ${food.description}
           };
         }
         if (settings.openFoodFactsEnabled !== false) {
-          sources.openFoodFacts = {
-            enabled: true,
-          };
+          sources.openFoodFacts = { enabled: true };
         }
 
         const userLocale = this.plugin.i18nManager?.getCurrentLocale() || 'en';
@@ -1799,7 +1043,6 @@ ${food.description}
       }
 
       if (newResults.length > 0) {
-        // Filter out duplicates based on ID
         const existingIds = new Set(this.allResults.map((r) => r.id));
         const uniqueNewResults = newResults.filter((r) => !existingIds.has(r.id));
 
@@ -1808,15 +1051,23 @@ ${food.description}
           this.results = this.allResults;
           this.hasMoreResults = newResults.length > 0;
 
-          // Update Fuse index with new results
           const allFoodDocs: FoodDoc[] = this.allResults.map(unifiedResultToFoodDoc);
-          buildFuseIndex(this.currentTab, allFoodDocs);
+          buildFuseIndex(this.tabManager.getCurrentTab(), allFoodDocs);
 
-          // Re-render with new results
-          this.renderResults(searchTerm);
+          this.renderer.renderResults(
+            searchTerm,
+            this.results,
+            this.isBarcodeSearch,
+            this.selectedIndex,
+            (food) => void this.handleFoodSelection(food),
+            (index) => {
+              this.selectedIndex = index;
+              this.renderer.highlightSelectedResult(index, () => {});
+              this.renderer.scrollSelectedIntoView(index);
+            }
+          );
           this.storeResultsInCache(searchTerm);
         } else {
-          // No new unique results, stop pagination
           this.hasMoreResults = false;
         }
       } else {
@@ -1828,181 +1079,52 @@ ${food.description}
       this.isLoadingMore = false;
     }
   }
-}
 
-// Enhanced FileNameModal with default serving size option
-class FileNameModal extends Modal {
-  private fileNameInput: HTMLInputElement;
-  private defaultServingInput: HTMLInputElement;
-  private submitButton: HTMLElement;
-  private component: Component;
-  private isSubmitting = false;
-
-  constructor(
-    app: App,
-    private defaultName: string,
-    private originalServingSize: number, // The serving size from the API result
-    private onSubmit: (fileName: string, defaultServing?: number) => Promise<boolean>, // Updated signature
-    private plugin?: MacrosPlugin
-  ) {
-    super(app);
-    this.component = new Component();
+  private async handleFoodSelection(food: UnifiedFoodResult): Promise<void> {
+    if (food.source === 'usda' || food.source === 'fatsecret' || food.source === 'openfoodfacts') {
+      await this.promptForFileName(food);
+    } else {
+      this.onSelect(food);
+      this.close();
+    }
   }
 
-  onOpen() {
-    const { contentEl } = this;
-    contentEl.addClass('file-name-modal');
+  private async promptForFileName(food: UnifiedFoodResult): Promise<void> {
+    // Import here to avoid circular dependency
+    const { FileNameModal } = await import('./FileNameModal');
 
-    // Fixed: Prefix unused variables with underscore
-    contentEl.createEl('h2', {
-      text: 'Save food item',
-      cls: 'modal-title',
-    });
+    const modal = new FileNameModal(
+      this.app,
+      food.name,
+      food.gramsServing || 100,
+      async (fileName: string, defaultServing?: number) => {
+        const safeFileName = this.fileSaver.sanitizeFileName(fileName);
 
-    contentEl.createEl('p', {
-      text: 'Please enter a name and default serving size for this food item:',
-      cls: 'modal-description',
-    });
-
-    // Input container
-    const inputContainer = contentEl.createDiv({ cls: 'modal-content' });
-
-    // File name input section
-    const nameSection = inputContainer.createDiv({ cls: 'setting-item' });
-    const nameInfo = nameSection.createDiv({ cls: 'setting-item-info' });
-    nameInfo.createDiv({
-      text: 'File Name:',
-      cls: 'setting-item-name',
-    });
-
-    const nameControl = nameSection.createDiv({ cls: 'setting-item-control' });
-    this.fileNameInput = nameControl.createEl('input', {
-      type: 'text',
-      cls: 'mod-text',
-      value: this.defaultName,
-    });
-
-    // Default serving size input section
-    const servingSection = inputContainer.createDiv({ cls: 'setting-item' });
-    const servingInfo = servingSection.createDiv({ cls: 'setting-item-info' });
-    servingInfo.createDiv({
-      text: 'Default Serving Size (grams):',
-      cls: 'setting-item-name',
-    });
-    servingInfo.createDiv({
-      text: `Optional: Set a custom default serving size for when you add this food to your macros. If not set, it will use ${this.originalServingSize}g from the API.`,
-      cls: 'setting-item-description',
-    });
-
-    const servingControl = servingSection.createDiv({ cls: 'setting-item-control' });
-    this.defaultServingInput = servingControl.createEl('input', {
-      type: 'number',
-      cls: 'mod-text',
-      value: this.originalServingSize.toString(),
-      attr: {
-        min: '1',
-        step: '0.1',
-        placeholder: this.originalServingSize.toString(),
-      },
-    });
-
-    // Button container
-    const buttonContainer = contentEl.createDiv({ cls: 'modal-button-container' });
-
-    const cancelButton = buttonContainer.createEl('button', {
-      text: 'Cancel',
-      cls: 'mod-button',
-    });
-
-    this.submitButton = buttonContainer.createEl('button', {
-      text: 'Save',
-      cls: 'mod-button mod-cta',
-    });
-
-    // Event handlers
-    this.component.registerDomEvent(cancelButton, 'click', () => {
-      this.close();
-    });
-
-    this.component.registerDomEvent(this.submitButton, 'click', async () => {
-      await this.handleSubmit();
-    });
-
-    this.component.registerDomEvent(this.fileNameInput, 'keydown', async (event: KeyboardEvent) => {
-      if (event.key === 'Enter') {
-        event.preventDefault();
-        // Move to serving size input
-        this.defaultServingInput.focus();
-      } else if (event.key === 'Escape') {
-        this.close();
-      }
-    });
-
-    this.component.registerDomEvent(
-      this.defaultServingInput,
-      'keydown',
-      async (event: KeyboardEvent) => {
-        if (event.key === 'Enter') {
-          event.preventDefault();
-          await this.handleSubmit();
-        } else if (event.key === 'Escape') {
-          this.close();
+        if (safeFileName !== fileName.trim()) {
+          this.plugin?.logger.debug(`Filename sanitized: "${fileName}" -> "${safeFileName}"`);
         }
-      }
+
+        const existsResult = await this.fileSaver.checkFileExists(safeFileName);
+        if (existsResult.exists) {
+          new Notice(
+            `A food item with the name "${safeFileName}" already exists in your Nutrition folder. Please choose a different name to avoid conflicts.`
+          );
+          return false;
+        }
+
+        try {
+          await this.fileSaver.saveFoodFile(food, fileName, defaultServing);
+          this.close();
+          return true;
+        } catch (error) {
+          this.plugin?.logger.error('Error saving food file:', error);
+          new Notice(t('food.search.error.saveFailed'));
+          return false;
+        }
+      },
+      this.plugin
     );
 
-    // Auto-focus and select text
-    window.setTimeout(() => {
-      this.fileNameInput.focus();
-      this.fileNameInput.select();
-    }, 50);
-  }
-
-  private async handleSubmit(): Promise<void> {
-    // Prevent double submission
-    if (this.isSubmitting) return;
-
-    const fileName = this.fileNameInput.value.trim();
-    const defaultServingStr = this.defaultServingInput.value.trim();
-
-    if (!fileName) {
-      new Notice('Please enter a file name.');
-      this.fileNameInput.focus();
-      return;
-    }
-
-    // Validate serving size
-    const defaultServing = parseFloat(defaultServingStr);
-    if (isNaN(defaultServing) || defaultServing <= 0) {
-      new Notice('Please enter a valid serving size greater than 0.');
-      this.defaultServingInput.focus();
-      return;
-    }
-
-    // Disable button during submission
-    this.isSubmitting = true;
-    (this.submitButton as HTMLButtonElement).disabled = true;
-    this.submitButton.textContent = 'Saving...';
-
-    try {
-      // Pass both filename and default serving size
-      const shouldClose = await this.onSubmit(fileName, defaultServing);
-      if (shouldClose) {
-        this.close();
-      }
-    } catch (error) {
-      this.plugin?.logger.error('Error saving food item:', error);
-      new Notice(t('food.search.error.saveFailed'));
-    } finally {
-      // Re-enable button
-      this.isSubmitting = false;
-      (this.submitButton as HTMLButtonElement).disabled = false;
-      this.submitButton.textContent = 'Save';
-    }
-  }
-
-  onClose() {
-    this.component.unload();
-    this.contentEl.empty();
+    modal.open();
   }
 }

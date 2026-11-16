@@ -160,7 +160,7 @@ export class GroupRenderer {
       }
 
       // Force a complete refresh
-      await this.plugin.forceCompleteReload();
+      await this.plugin.refreshManager.forceCompleteRefresh();
     } catch (error) {
       this.plugin.logger.error('Error removing group:', error);
       new Notice(`Error removing group: ${(error as Error).message}`);
@@ -276,7 +276,7 @@ export class GroupRenderer {
         }
       };
 
-      this.plugin.registerDomListener(removeBtn, 'click', (e) => void removeBtnHandler(e));
+      this.plugin.registerDomEvent(removeBtn, 'click', (e) => void removeBtnHandler(e));
       leftContent.appendChild(removeBtn);
     }
 
@@ -335,11 +335,11 @@ export class GroupRenderer {
 
       this.contextMenuManager.showMealContextMenu(mouseEvent, commentTarget, async () => {
         // Refresh the table after comment update
-        await this.plugin.forceCompleteReload();
+        await this.plugin.refreshManager.forceCompleteRefresh();
       });
     };
 
-    this.plugin.registerDomListener(headerCell, 'contextmenu', contextMenuHandler);
+    this.plugin.registerDomEvent(headerCell, 'contextmenu', contextMenuHandler);
   }
 
   private setupCollapsibleHeader(
@@ -351,7 +351,7 @@ export class GroupRenderer {
 
     let isCollapsed = false;
 
-    if (this.state) {
+    if (this.state && sectionName) {
       isCollapsed = this.state.getCollapsedState(sectionName);
 
       if (isCollapsed) {
@@ -378,23 +378,27 @@ export class GroupRenderer {
       if (currentState === 'collapsed') {
         headerCell.classList.remove(CLASS_NAMES.TABLE.COLLAPSED);
         headerCell.classList.remove('collapsed');
-        this.setRowsVisibility(table, sectionName, true);
+        if (sectionName) {
+          this.setRowsVisibility(table, sectionName, true);
+        }
         headerCell.dataset.macroState = 'expanded';
-        if (this.state) {
+        if (this.state && sectionName) {
           this.state.saveCollapsedState(sectionName, false);
         }
       } else {
         headerCell.classList.add(CLASS_NAMES.TABLE.COLLAPSED);
         headerCell.classList.add('collapsed');
-        this.setRowsVisibility(table, sectionName, false);
+        if (sectionName) {
+          this.setRowsVisibility(table, sectionName, false);
+        }
         headerCell.dataset.macroState = 'collapsed';
-        if (this.state) {
+        if (this.state && sectionName) {
           this.state.saveCollapsedState(sectionName, true);
         }
       }
     };
 
-    this.plugin.registerDomListener(headerCell, 'click', headerCellClickHandler);
+    this.plugin.registerDomEvent(headerCell, 'click', headerCellClickHandler);
   }
 
   private setRowsVisibility(table: HTMLTableElement, sectionName: string, visible: boolean): void {
@@ -576,7 +580,7 @@ export class GroupRenderer {
       }
     };
 
-    this.plugin.registerDomListener(combinedHeaderCell, 'click', combinedHeaderClickHandler);
+    this.plugin.registerDomEvent(combinedHeaderCell, 'click', combinedHeaderClickHandler);
 
     this.renderGroupTotals(
       table,

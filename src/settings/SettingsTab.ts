@@ -1,0 +1,1700 @@
+import { App, PluginSettingTab, Setting, Notice, normalizePath, setIcon } from 'obsidian';
+import { ChartLoader } from '../utils/ChartLoader';
+import MacrosPlugin from '../main';
+import { AddMealTemplateModal, EditMealTemplateModal } from '../ui';
+import { fetchFoodData } from '../core/api';
+import { FolderSuggest } from '../utils/FolderSuggest';
+import { SortableTabOrder } from './SortableTabOrder';
+import { I18nManager, t } from '../lang/I18nManager';
+import { convertEnergyUnit } from '../utils/energyUtils';
+import type { Chart } from 'chart.js';
+import {
+  MICRONUTRIENTS,
+  MICRONUTRIENT_MAP,
+  MicronutrientCategory,
+  MicronutrientProfile,
+  getPinnedMicronutrientKeys,
+  getRecommendedValue,
+  resolveLifeStageGroup,
+} from '../utils/nutrition/micronutrients';
+
+interface TabDefinition {
+  id: string;
+  name: string;
+  icon: string;
+  content: (containerEl: HTMLElement) => void;
+}
+
+/**
+ * NutritionalSettingTab
+ * ---------------------
+ * The Obsidian settings tab for the Macros plugin. Renders all settings
+ * categories (general, display, food sources, meal templates, tolerances,
+ * micronutrients, advanced, support) inside PluginSettingTab.
+ */
+export class NutritionalSettingTab extends PluginSettingTab {
+  plugin: MacrosPlugin;
+  private previewChart: Chart | null = null;
+  private chartId = 'settings-preview-chart';
+  private i18n: I18nManager;
+  private sortableTabOrder: SortableTabOrder | null = null;
+  private activeTabId = 'general';
+  private tabs: TabDefinition[] = [];
+
+  constructor(app: App, plugin: MacrosPlugin) {
+    super(app, plugin);
+    this.plugin = plugin;
+    this.i18n = I18nManager.getInstance();
+    this.initializeTabs();
+  }
+
+  private initializeTabs(): void {
+    this.tabs = [
+      {
+        id: 'general',
+        name: t('settings.tabs.general'),
+        icon: 'folder',
+        content: (containerEl) => this.renderGeneralTab(containerEl),
+      },
+      {
+        id: 'display',
+        name: t('settings.tabs.display'),
+        icon: 'eye',
+        content: (containerEl) => this.renderDisplayTab(containerEl),
+      },
+      {
+        id: 'food-sources',
+        name: t('settings.tabs.foodSources'),
+        icon: 'apple',
+        content: (containerEl) => this.renderFoodSourcesTab(containerEl),
+      },
+      {
+        id: 'meal-templates',
+        name: t('settings.tabs.mealTemplates'),
+        icon: 'utensils',
+        content: (containerEl) => this.renderMealTemplatesTab(containerEl),
+      },
+      {
+        id: 'food-tolerances',
+        name: t('settings.tabs.foodTolerances'),
+        icon: 'alert-triangle',
+        content: (containerEl) => this.renderFoodTolerancesTab(containerEl),
+      },
+      {
+        id: 'micronutrients',
+        name: t('settings.tabs.micronutrients'),
+        icon: 'pill',
+        content: (containerEl) => this.renderMicronutrientsTab(containerEl),
+      },
+      {
+        id: 'advanced',
+        name: t('settings.tabs.advanced'),
+        icon: 'settings-2',
+        content: (containerEl) => this.renderAdvancedTab(containerEl),
+      },
+      {
+        id: 'support',
+        name: t('settings.tabs.support'),
+        icon: 'heart',
+        content: (containerEl) => this.renderSupportTab(containerEl),
+      },
+    ];
+  }
+
+  display(): void {
+    const { containerEl } = this;
+    containerEl.empty();
+
+    // Create tab navigation
+    containerEl.createDiv({ cls: 'macros-settings-nav' });
+
+    this.tabs.forEach((tab) => {
+      const tabButton = containerEl.createDiv({
+        cls: `macros-settings-tab ${this.activeTabId === tab.id ? 'active' : ''}`,
+        attr: { 'data-tab': tab.id },
+      });
+
+      // Add icon using Obsidian's setIcon
+      const iconEl = tabButton.createDiv({ cls: 'macros-settings-tab-icon' });
+      setIcon(iconEl, tab.icon);
+
+      // Add label
+      tabButton.createDiv({
+        cls: 'macros-settings-tab-label',
+        text: tab.name,
+      });
+
+      // Add click handler
+      tabButton.addEventListener('click', () => {
+        this.switchTab(tab.id);
+      });
+    });
+
+    // Create tab content area
+    const tabContent = containerEl.createDiv({ cls: 'macros-settings-content' });
+
+    // Render active tab content
+    this.renderActiveTab(tabContent);
+  }
+
+  private switchTab(tabId: string): void {
+    this.activeTabId = tabId;
+
+    // Update active tab styling
+    this.containerEl.querySelectorAll('.macros-settings-tab').forEach((tab) => {
+      tab.classList.remove('active');
+    });
+
+    const activeTab = this.containerEl.querySelector(`[data-tab="${tabId}"]`);
+    if (activeTab) {
+      activeTab.classList.add('active');
+    }
+
+    // Re-render content
+    const contentEl = this.containerEl.querySelector<HTMLElement>('.macros-settings-content');
+    if (contentEl) {
+      this.renderActiveTab(contentEl);
+    }
+  }
+
+  private renderActiveTab(containerEl: HTMLElement): void {
+    containerEl.empty();
+
+    const activeTab = this.tabs.find((tab) => tab.id === this.activeTabId);
+    if (activeTab) {
+      activeTab.content(containerEl);
+    }
+  }
+
+  private renderGeneralTab(containerEl: HTMLElement): void {
+    // =======================================
+    // STORAGE
+    // =======================================
+    new Setting(containerEl).setName(`📂 ${t('settings.storage.title')}`).setHeading();
+
+    // Storage Folder Setting with FolderSuggest
+    const folderSetting = new Setting(containerEl)
+      .setName(t('settings.storage.folder'))
+      .setDesc(t('settings.storage.folderDesc'));
+
+    // Create the input element
+    const folderInputEl = folderSetting.controlEl.createEl('input', {
+      type: 'text',
+      cls: 'folder-input-field',
+      value: this.plugin.settings.storageFolder,
+    });
+
+    new FolderSuggest(this.app, folderInputEl, 'Nutrition');
+
+    // Add change handler
+    folderInputEl.addEventListener('change', () => {
+      this.plugin.settings.storageFolder = normalizePath(folderInputEl.value);
+      void this.plugin.saveData(this.plugin.settings);
+    });
+
+    // Add blur handler to ensure the value is saved when focus is lost
+    folderInputEl.addEventListener('blur', () => {
+      this.plugin.settings.storageFolder = normalizePath(folderInputEl.value);
+      void this.plugin.saveData(this.plugin.settings);
+    });
+
+    // =======================================
+    // NUTRITION TARGETS (Enhanced with kJ support)
+    // =======================================
+    new Setting(containerEl).setName(`🎯 ${t('settings.targets.title')}`).setHeading();
+
+    // Macro Templates Dropdown
+    new Setting(containerEl)
+      .setName(t('settings.targets.templates.title'))
+      .setDesc(t('settings.targets.templates.description'))
+      .addDropdown((dropdown) => {
+        dropdown
+          .addOption('custom', t('settings.targets.templates.custom'))
+          .addOption('keto', t('settings.targets.templates.keto'))
+          .addOption('low-carb', t('settings.targets.templates.lowCarb'))
+          .addOption('mediterranean', t('settings.targets.templates.mediterranean'))
+          .addOption('balanced', t('settings.targets.templates.balanced'))
+          .addOption('high-protein', t('settings.targets.templates.highProtein'))
+          .addOption('plant-based', t('settings.targets.templates.plantBased'))
+          .addOption('usda-men', t('settings.targets.templates.usdaMen'))
+          .addOption('usda-women', t('settings.targets.templates.usdaWomen'))
+          .addOption('athlete', t('settings.targets.templates.athlete'))
+          .addOption('cutting', t('settings.targets.templates.cutting'))
+          .addOption('bulking', t('settings.targets.templates.bulking'))
+          .setValue('custom')
+          .onChange(async (value: string) => {
+            if (value !== 'custom') {
+              await this.applyMacroTemplate(value);
+              // Refresh the display to show updated values
+              window.setTimeout(() => this.display(), 100);
+            }
+          });
+      });
+
+    // Add informational note about templates
+    const templateInfo = containerEl.createDiv({ cls: 'macro-template-info' });
+    templateInfo.createEl('p', {
+      text: t('settings.targets.templates.info'),
+    });
+
+    // Add visual separator for manual target settings
+    const targetsSection = containerEl.createDiv({ cls: 'nutrition-targets-section' });
+    new Setting(targetsSection).setName(t('settings.targets.manualTitle')).setHeading();
+
+    // Enhanced Calorie/Energy Target with bidirectional conversion
+    const energyTargetContainer = targetsSection.createDiv({ cls: 'energy-target-container' });
+
+    new Setting(energyTargetContainer)
+      .setName(t('settings.targets.calories'))
+      .setDesc(t('settings.targets.caloriesDesc'))
+      .then((setting) => {
+        // Create a custom control element for the dual inputs
+        const controlContainer = setting.controlEl.createDiv({ cls: 'dual-energy-inputs' });
+
+        // kcal input
+        const kcalContainer = controlContainer.createDiv({ cls: 'energy-input-group' });
+        kcalContainer.createEl('label', {
+          text: 'Kcal',
+          cls: 'energy-input-label',
+        });
+        const kcalInput = kcalContainer.createEl('input', {
+          type: 'number',
+          cls: 'energy-input',
+          attr: {
+            placeholder: '2000',
+            min: '0',
+            step: '1',
+          },
+        });
+        kcalInput.value = this.plugin.settings.dailyCaloriesTarget.toString();
+
+        // kJ input
+        const kjContainer = controlContainer.createDiv({ cls: 'energy-input-group' });
+        kjContainer.createEl('label', {
+          text: 'Kj',
+          cls: 'energy-input-label',
+        });
+        const kjInput = kjContainer.createEl('input', {
+          type: 'number',
+          cls: 'energy-input',
+          attr: {
+            placeholder: '8368',
+            min: '0',
+            step: '1',
+          },
+        });
+        // Calculate initial kJ value
+        const initialKjValue = convertEnergyUnit(
+          this.plugin.settings.dailyCaloriesTarget,
+          'kcal',
+          'kJ'
+        );
+        kjInput.value = Math.round(initialKjValue).toString();
+
+        // Set up bidirectional conversion
+        const setupEnergyConversion = () => {
+          // Convert from kcal to kJ
+          kcalInput.addEventListener('input', () => {
+            const kcalValue = parseFloat(kcalInput.value);
+            if (!isNaN(kcalValue) && kcalValue >= 0) {
+              const kjValue = convertEnergyUnit(kcalValue, 'kcal', 'kJ');
+              kjInput.value = Math.round(kjValue).toString();
+
+              // Save the kcal value to settings
+              this.plugin.settings.dailyCaloriesTarget = Math.round(kcalValue);
+              void this.plugin.saveData(this.plugin.settings);
+            } else if (kcalInput.value === '') {
+              kjInput.value = '';
+            }
+          });
+
+          // Convert from kJ to kcal
+          kjInput.addEventListener('input', () => {
+            const kjValue = parseFloat(kjInput.value);
+            if (!isNaN(kjValue) && kjValue >= 0) {
+              const kcalValue = convertEnergyUnit(kjValue, 'kJ', 'kcal');
+              kcalInput.value = Math.round(kcalValue).toString();
+
+              // Save the kcal value to settings (we always store in kcal internally)
+              this.plugin.settings.dailyCaloriesTarget = Math.round(kcalValue);
+              void this.plugin.saveData(this.plugin.settings);
+            } else if (kjInput.value === '') {
+              kcalInput.value = '';
+            }
+          });
+        };
+
+        setupEnergyConversion();
+      });
+
+    new Setting(targetsSection)
+      .setName(t('settings.targets.protein'))
+      .setDesc(t('settings.targets.proteinDesc'))
+      .addText((text) => {
+        text
+          .setValue(this.plugin.settings.dailyProteinTarget.toString())
+          .onChange(async (value) => {
+            const numValue = parseInt(value);
+            if (!isNaN(numValue) && numValue > 0) {
+              this.plugin.settings.dailyProteinTarget = numValue;
+              await this.plugin.saveData(this.plugin.settings);
+            }
+          });
+      });
+
+    new Setting(targetsSection)
+      .setName(t('settings.targets.fat'))
+      .setDesc(t('settings.targets.fatDesc'))
+      .addText((text) => {
+        text.setValue(this.plugin.settings.dailyFatTarget.toString()).onChange(async (value) => {
+          const numValue = parseInt(value);
+          if (!isNaN(numValue) && numValue > 0) {
+            this.plugin.settings.dailyFatTarget = numValue;
+            await this.plugin.saveData(this.plugin.settings);
+          }
+        });
+      });
+
+    new Setting(targetsSection)
+      .setName(t('settings.targets.carbs'))
+      .setDesc(t('settings.targets.carbsDesc'))
+      .addText((text) => {
+        text.setValue(this.plugin.settings.dailyCarbsTarget.toString()).onChange(async (value) => {
+          const numValue = parseInt(value);
+          if (!isNaN(numValue) && numValue > 0) {
+            this.plugin.settings.dailyCarbsTarget = numValue;
+            await this.plugin.saveData(this.plugin.settings);
+          }
+        });
+      });
+
+    // Energy Unit Setting
+    new Setting(targetsSection)
+      .setName(t('settings.display.energyUnit'))
+      .setDesc(t('settings.display.energyUnitDesc'))
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption('kcal', t('settings.display.energyUnitKcal'))
+          .addOption('kJ', t('settings.display.energyUnitKj'))
+          .setValue(this.plugin.settings.energyUnit)
+          .onChange(async (value: string) => {
+            if (value === 'kcal' || value === 'kJ') {
+              this.plugin.settings.energyUnit = value;
+              await this.plugin.saveData(this.plugin.settings);
+              this.plugin.refreshManager.scheduleLiveRefresh();
+            }
+          })
+      );
+  }
+
+  /**
+   * Apply a macro template to update daily nutrition targets
+   */
+  private async applyMacroTemplate(templateId: string): Promise<void> {
+    const templates = this.getMacroTemplates();
+    const template = templates[templateId];
+
+    if (!template) {
+      new Notice(t('settings.targets.templates.notFound'));
+      return;
+    }
+
+    // Apply the template values
+    this.plugin.settings.dailyCaloriesTarget = template.calories;
+    this.plugin.settings.dailyProteinTarget = template.protein;
+    this.plugin.settings.dailyFatTarget = template.fat;
+    this.plugin.settings.dailyCarbsTarget = template.carbs;
+
+    await this.plugin.saveData(this.plugin.settings);
+
+    new Notice(t('settings.targets.templates.applied', { name: template.name }));
+  }
+
+  /**
+   * Get available macro templates with calculated values
+   */
+  private getMacroTemplates(): Record<
+    string,
+    {
+      name: string;
+      calories: number;
+      protein: number;
+      fat: number;
+      carbs: number;
+      description: string;
+    }
+  > {
+    return {
+      keto: {
+        name: t('settings.targets.templates.ketoName'),
+        calories: 2000,
+        protein: 125, // 25% of 2000 kcal = 500 kcal / 4 = 125g
+        fat: 156, // 70% of 2000 kcal = 1400 kcal / 9 = 155.6g
+        carbs: 25, // 5% of 2000 kcal = 100 kcal / 4 = 25g
+        description: t('settings.targets.templates.ketoDesc'),
+      },
+      'low-carb': {
+        name: t('settings.targets.templates.lowCarbName'),
+        calories: 2000,
+        protein: 200, // 40% of 2000 kcal = 800 kcal / 4 = 200g
+        fat: 89, // 40% of 2000 kcal = 800 kcal / 9 = 88.9g
+        carbs: 100, // 20% of 2000 kcal = 400 kcal / 4 = 100g
+        description: t('settings.targets.templates.lowCarbDesc'),
+      },
+      mediterranean: {
+        name: t('settings.targets.templates.mediterraneanName'),
+        calories: 2000,
+        protein: 100, // 20% of 2000 kcal = 400 kcal / 4 = 100g
+        fat: 78, // 35% of 2000 kcal = 700 kcal / 9 = 77.8g
+        carbs: 225, // 45% of 2000 kcal = 900 kcal / 4 = 225g
+        description: t('settings.targets.templates.mediterraneanDesc'),
+      },
+      balanced: {
+        name: t('settings.targets.templates.balancedName'),
+        calories: 2000,
+        protein: 150, // 30% of 2000 kcal = 600 kcal / 4 = 150g
+        fat: 67, // 30% of 2000 kcal = 600 kcal / 9 = 66.7g
+        carbs: 200, // 40% of 2000 kcal = 800 kcal / 4 = 200g
+        description: t('settings.targets.templates.balancedDesc'),
+      },
+      'high-protein': {
+        name: t('settings.targets.templates.highProteinName'),
+        calories: 2000,
+        protein: 250, // 50% of 2000 kcal = 1000 kcal / 4 = 250g
+        fat: 56, // 25% of 2000 kcal = 500 kcal / 9 = 55.6g
+        carbs: 125, // 25% of 2000 kcal = 500 kcal / 4 = 125g
+        description: t('settings.targets.templates.highProteinDesc'),
+      },
+      'plant-based': {
+        name: t('settings.targets.templates.plantBasedName'),
+        calories: 2000,
+        protein: 100, // 20% of 2000 kcal = 400 kcal / 4 = 100g
+        fat: 56, // 25% of 2000 kcal = 500 kcal / 9 = 55.6g
+        carbs: 275, // 55% of 2000 kcal = 1100 kcal / 4 = 275g
+        description: t('settings.targets.templates.plantBasedDesc'),
+      },
+      'usda-men': {
+        name: t('settings.targets.templates.usdaMenName'),
+        calories: 2500, // Higher calorie target for men
+        protein: 156, // 25% of 2500 kcal = 625 kcal / 4 = 156g
+        fat: 83, // 30% of 2500 kcal = 750 kcal / 9 = 83.3g
+        carbs: 281, // 45% of 2500 kcal = 1125 kcal / 4 = 281g
+        description: t('settings.targets.templates.usdaMenDesc'),
+      },
+      'usda-women': {
+        name: t('settings.targets.templates.usdaWomenName'),
+        calories: 2000, // Standard calorie target for women
+        protein: 125, // 25% of 2000 kcal = 500 kcal / 4 = 125g
+        fat: 67, // 30% of 2000 kcal = 600 kcal / 9 = 66.7g
+        carbs: 225, // 45% of 2000 kcal = 900 kcal / 4 = 225g
+        description: t('settings.targets.templates.usdaWomenDesc'),
+      },
+      athlete: {
+        name: t('settings.targets.templates.athleteName'),
+        calories: 2800, // Higher calories for athletes
+        protein: 140, // 20% of 2800 kcal = 560 kcal / 4 = 140g
+        fat: 78, // 25% of 2800 kcal = 700 kcal / 9 = 77.8g
+        carbs: 385, // 55% of 2800 kcal = 1540 kcal / 4 = 385g
+        description: t('settings.targets.templates.athleteDesc'),
+      },
+      cutting: {
+        name: t('settings.targets.templates.cuttingName'),
+        calories: 1800, // Lower calories for cutting
+        protein: 203, // 45% of 1800 kcal = 810 kcal / 4 = 202.5g
+        fat: 50, // 25% of 1800 kcal = 450 kcal / 9 = 50g
+        carbs: 135, // 30% of 1800 kcal = 540 kcal / 4 = 135g
+        description: t('settings.targets.templates.cuttingDesc'),
+      },
+      bulking: {
+        name: t('settings.targets.templates.bulkingName'),
+        calories: 3000, // Higher calories for bulking
+        protein: 225, // 30% of 3000 kcal = 900 kcal / 4 = 225g
+        fat: 83, // 25% of 3000 kcal = 750 kcal / 9 = 83.3g
+        carbs: 338, // 45% of 3000 kcal = 1350 kcal / 4 = 337.5g
+        description: t('settings.targets.templates.bulkingDesc'),
+      },
+    };
+  }
+
+  private renderDisplayTab(containerEl: HTMLElement): void {
+    new Setting(containerEl).setName(`⚙️ ${t('settings.display.title')}`).setHeading();
+
+    new Setting(containerEl)
+      .setName(t('settings.display.showSummaryRows'))
+      .setDesc(t('settings.display.showSummaryRowsDesc'))
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.showSummaryRows).onChange(async (value) => {
+          this.plugin.settings.showSummaryRows = value;
+          await this.plugin.saveData(this.plugin.settings);
+          this.plugin.refreshManager.scheduleLiveRefresh();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName(t('settings.display.disableTooltips'))
+      .setDesc(t('settings.display.disableTooltipsDesc'))
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.disableTooltips).onChange(async (value) => {
+          this.plugin.settings.disableTooltips = value;
+          await this.plugin.saveData(this.plugin.settings);
+          this.plugin.refreshManager.scheduleLiveRefresh();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName(t('settings.display.showCellPercentages'))
+      .setDesc(t('settings.display.showCellPercentagesDesc'))
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.showCellPercentages).onChange(async (value) => {
+          this.plugin.settings.showCellPercentages = value;
+          await this.plugin.saveData(this.plugin.settings);
+          this.plugin.refreshManager.scheduleLiveRefresh();
+        })
+      );
+
+    // Updated Add to Macros Tab Order Setting with Sortable Component
+    const tabOrderSetting = new Setting(containerEl)
+      .setName(t('settings.display.addToMacrosTabOrder'))
+      .setDesc(t('settings.display.addToMacrosTabOrderDesc'));
+
+    // Clean up existing sortable component if it exists
+    if (this.sortableTabOrder) {
+      this.sortableTabOrder.unload();
+    }
+
+    // Create and initialize the sortable component
+    this.sortableTabOrder = new SortableTabOrder(this.plugin, tabOrderSetting.settingEl);
+    this.sortableTabOrder.create();
+
+    // =======================================
+    // PIE CHART CUSTOMIZATION
+    // =======================================
+    new Setting(containerEl).setName(`📊 ${t('settings.charts.title')}`).setHeading();
+
+    // Protein Color Setting
+    new Setting(containerEl)
+      .setName(t('settings.charts.proteinColor'))
+      .setDesc(t('settings.charts.proteinColorDesc'))
+      .addColorPicker((colorPicker) => {
+        colorPicker.setValue(this.plugin.settings.proteinColor).onChange(async (value) => {
+          this.plugin.settings.proteinColor = value;
+          await this.plugin.saveData(this.plugin.settings);
+          this.updateChartPreview();
+        });
+        return colorPicker;
+      });
+
+    // Fat Color Setting
+    new Setting(containerEl)
+      .setName(t('settings.charts.fatColor'))
+      .setDesc(t('settings.charts.fatColorDesc'))
+      .addColorPicker((colorPicker) => {
+        colorPicker.setValue(this.plugin.settings.fatColor).onChange(async (value) => {
+          this.plugin.settings.fatColor = value;
+          await this.plugin.saveData(this.plugin.settings);
+          this.updateChartPreview();
+        });
+        return colorPicker;
+      });
+
+    // Carbs Color Setting
+    new Setting(containerEl)
+      .setName(t('settings.charts.carbsColor'))
+      .setDesc(t('settings.charts.carbsColorDesc'))
+      .addColorPicker((colorPicker) => {
+        colorPicker.setValue(this.plugin.settings.carbsColor).onChange(async (value) => {
+          this.plugin.settings.carbsColor = value;
+          await this.plugin.saveData(this.plugin.settings);
+          this.updateChartPreview();
+        });
+        return colorPicker;
+      });
+
+    const previewContainer = containerEl.createDiv({ cls: 'macrospc-preview-container' });
+    new Setting(previewContainer).setName(t('settings.charts.preview')).setHeading();
+
+    // Create canvas with explicit dimensions
+    const previewCanvas = previewContainer.createEl('canvas');
+    previewCanvas.width = 300;
+    previewCanvas.height = 300;
+    previewCanvas.id = this.chartId;
+
+    window.setTimeout(() => {
+      void this.initChartPreview(previewCanvas);
+    }, 50);
+
+    void this.initChartPreview(previewCanvas);
+  }
+
+  private renderFoodSourcesTab(containerEl: HTMLElement): void {
+    new Setting(containerEl).setName(`🔌 ${t('settings.api.title')}`).setHeading();
+
+    const apiNotice = containerEl.createDiv({ cls: 'macrospc-api-notice' });
+    apiNotice.createEl('p', {
+      text: t('settings.api.description'),
+    });
+
+    // =======================================
+    // FATSECRET API
+    // =======================================
+    new Setting(containerEl).setName(`${t('settings.api.fatSecretTitle')}`).setHeading();
+
+    const fatSecretNotice = containerEl.createDiv({ cls: 'macrospc-api-notice' });
+    fatSecretNotice.createEl('p', {
+      text: t('settings.api.fatSecretSignupText'),
+    });
+
+    fatSecretNotice.createEl('a', {
+      text: t('settings.api.fatSecretSignupLink'),
+      attr: { href: 'https://platform.fatsecret.com/platform-api', target: '_blank' },
+    });
+
+    // Check if FatSecret credentials are configured
+    const hasFatSecretCredentials =
+      this.plugin.settings.fatSecretApiKey && this.plugin.settings.fatSecretApiSecret;
+
+    // FatSecret Enable Toggle
+    new Setting(containerEl)
+      .setName(t('settings.api.fatSecretEnable'))
+      .setDesc(t('settings.api.fatSecretEnableDesc'))
+      .addToggle((toggle) =>
+        toggle
+          .setValue(Boolean(this.plugin.settings.fatSecretEnabled && hasFatSecretCredentials))
+          .onChange(async (value) => {
+            if (value && !hasFatSecretCredentials) {
+              new Notice(t('settings.api.fatSecretCredentialsRequired'));
+              toggle.setValue(false);
+              return;
+            }
+            this.plugin.settings.fatSecretEnabled = value;
+            await this.plugin.saveData(this.plugin.settings);
+            window.setTimeout(() => this.display(), 100);
+          })
+      );
+
+    if (!hasFatSecretCredentials) {
+      const warningDiv = containerEl.createDiv({
+        cls: 'setting-item-description api-credentials-warning',
+      });
+      warningDiv.createEl('p', {
+        text: t('settings.api.fatSecretNotConfigured'),
+      });
+    } else {
+      const successDiv = containerEl.createDiv({
+        cls: 'setting-item-description api-credentials-success',
+      });
+      successDiv.createEl('p', {
+        text: t('settings.api.fatSecretConfigured'),
+      });
+    }
+
+    new Setting(containerEl)
+      .setName(t('settings.api.key'))
+      .setDesc(t('settings.api.keyDesc'))
+      .addText((text) => {
+        text
+          .setPlaceholder(t('settings.api.keyPlaceholder'))
+          .setValue(this.plugin.settings.fatSecretApiKey)
+          .onChange(async (value) => {
+            this.plugin.settings.fatSecretApiKey = value;
+            await this.plugin.saveData(this.plugin.settings);
+            // Refresh the settings display to update the status
+            window.setTimeout(() => this.display(), 100);
+          });
+      });
+
+    new Setting(containerEl)
+      .setName(t('settings.api.secret'))
+      .setDesc(t('settings.api.secretDesc'))
+      .addText((text) => {
+        text
+          .setPlaceholder(t('settings.api.secretPlaceholder'))
+          .setValue(this.plugin.settings.fatSecretApiSecret)
+          .onChange(async (value) => {
+            this.plugin.settings.fatSecretApiSecret = value;
+            await this.plugin.saveData(this.plugin.settings);
+            // Refresh the settings display to update the status
+            window.setTimeout(() => this.display(), 100);
+          });
+      });
+
+    // FatSecret Test connection section
+    new Setting(containerEl)
+      .setName(t('settings.api.testFatSecretConnection'))
+      .setDesc(t('settings.api.testFatSecretConnectionDesc'))
+      .addButton((button) => {
+        button.setButtonText(t('settings.api.testConnection')).onClick(async () => {
+          try {
+            // Check if credentials are configured
+            if (!hasFatSecretCredentials) {
+              new Notice(t('settings.api.fatSecretCredentialsRequired'));
+              return;
+            }
+
+            new Notice(t('food.search.searching'));
+            const results = await fetchFoodData(
+              this.plugin.app,
+              'apple',
+              0,
+              1,
+              this.plugin.settings.fatSecretApiKey,
+              this.plugin.settings.fatSecretApiSecret
+            );
+            if (results.length > 0) {
+              new Notice(t('notifications.testConnectionSuccess'));
+            } else {
+              new Notice(t('notifications.testConnectionFailed'));
+            }
+          } catch (error) {
+            this.plugin.logger.error('Error during FatSecret test connection:', error);
+            new Notice(t('notifications.testConnectionFailed'));
+          }
+        });
+      });
+
+    // =======================================
+    // USDA API
+    // =======================================
+    new Setting(containerEl).setName(`${t('settings.api.usdaTitle')}`).setHeading();
+
+    const usdaNotice = containerEl.createDiv({ cls: 'macrospc-api-notice' });
+    usdaNotice.createEl('p', {
+      text: t('settings.api.usdaDescription'),
+    });
+
+    usdaNotice.createEl('p', {
+      text: t('settings.api.usdaSignupText'),
+    });
+
+    usdaNotice.createEl('a', {
+      text: 'https://fdc.nal.usda.gov/api-guide.html',
+      attr: { href: 'https://fdc.nal.usda.gov/api-guide.html', target: '_blank' },
+    });
+
+    // Check if USDA credentials are configured
+    const hasUsdaCredentials =
+      this.plugin.settings.usdaApiKey && this.plugin.settings.usdaApiKey.length > 0;
+
+    // USDA Enable Toggle
+    new Setting(containerEl)
+      .setName(t('settings.api.usdaEnable'))
+      .setDesc(t('settings.api.usdaEnableDesc'))
+      .addToggle((toggle) =>
+        toggle
+          .setValue(Boolean(this.plugin.settings.usdaEnabled && hasUsdaCredentials))
+          .onChange(async (value) => {
+            if (value && !hasUsdaCredentials) {
+              new Notice(t('settings.api.usdaCredentialsRequired'));
+              toggle.setValue(false);
+              return;
+            }
+            this.plugin.settings.usdaEnabled = value;
+            await this.plugin.saveData(this.plugin.settings);
+            window.setTimeout(() => this.display(), 100);
+          })
+      );
+
+    if (!hasUsdaCredentials) {
+      const warningDiv = containerEl.createDiv({
+        cls: 'setting-item-description api-credentials-warning',
+      });
+      warningDiv.createEl('p', {
+        text: t('settings.api.usdaNotConfigured'),
+      });
+    } else {
+      const successDiv = containerEl.createDiv({
+        cls: 'setting-item-description api-credentials-success',
+      });
+      successDiv.createEl('p', {
+        text: t('settings.api.usdaConfigured'),
+      });
+    }
+
+    new Setting(containerEl)
+      .setName(t('settings.api.usdaKey'))
+      .setDesc(t('settings.api.usdaKeyDesc'))
+      .addText((text) => {
+        text
+          .setPlaceholder(t('settings.api.usdaKeyPlaceholder'))
+          .setValue(this.plugin.settings.usdaApiKey)
+          .onChange(async (value) => {
+            this.plugin.settings.usdaApiKey = value;
+            await this.plugin.saveData(this.plugin.settings);
+            // Refresh the settings display to update the status
+            window.setTimeout(() => this.display(), 100);
+          });
+      });
+
+    // USDA Test connection section
+    new Setting(containerEl)
+      .setName(t('settings.api.testUsdaConnection'))
+      .setDesc(t('settings.api.testUsdaConnectionDesc'))
+      .addButton((button) => {
+        button.setButtonText(t('settings.api.testConnection')).onClick(async () => {
+          try {
+            // Check if credentials are configured
+            if (!hasUsdaCredentials) {
+              new Notice(t('settings.api.usdaCredentialsRequired'));
+              return;
+            }
+
+            new Notice(t('food.search.searching'));
+            // Import USDA search function
+            const { searchFoods } = await import('../core/usda');
+            const results = await searchFoods(
+              this.plugin.app,
+              'apple',
+              0,
+              1,
+              this.plugin.settings.usdaApiKey
+            );
+            if (results.length > 0) {
+              new Notice(t('notifications.testConnectionSuccess'));
+            } else {
+              new Notice(t('notifications.testConnectionFailed'));
+            }
+          } catch (error) {
+            this.plugin.logger.error('Error during USDA test connection:', error);
+            new Notice(t('notifications.testConnectionFailed'));
+          }
+        });
+      });
+
+    // =======================================
+    // OPEN FOOD FACTS API
+    // =======================================
+    new Setting(containerEl).setName(`${t('settings.api.openFoodFactsTitle')}`).setHeading();
+
+    const offNotice = containerEl.createDiv({ cls: 'macrospc-api-notice' });
+    offNotice.createEl('p', {
+      text: t('settings.api.openFoodFactsDescription'),
+    });
+
+    offNotice.createEl('p', {
+      text: t('settings.api.openFoodFactsInfo'),
+    });
+
+    offNotice.createEl('a', {
+      text: t('settings.api.openFoodFactsLearnMore'),
+      attr: { href: 'https://world.openfoodfacts.org', target: '_blank' },
+    });
+
+    // Connection status indicator
+    const statusContainer = containerEl.createDiv({ cls: 'off-status-container' });
+
+    if (this.plugin.settings.openFoodFactsEnabled) {
+      const successDiv = statusContainer.createDiv({
+        cls: 'setting-item-description api-credentials-success',
+      });
+      successDiv.createEl('p', {
+        text: t('settings.api.openFoodFactsEnabled'),
+      });
+    } else {
+      const disabledDiv = statusContainer.createDiv({
+        cls: 'setting-item-description api-credentials-warning',
+      });
+      disabledDiv.createEl('p', {
+        text: t('settings.api.openFoodFactsDisabled'),
+      });
+    }
+
+    // Open Food Facts Enable Toggle with better description
+    new Setting(containerEl)
+      .setName(t('settings.api.openFoodFactsEnable'))
+      .setDesc(t('settings.api.openFoodFactsEnableDesc'))
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.openFoodFactsEnabled).onChange(async (value) => {
+          this.plugin.settings.openFoodFactsEnabled = value;
+          await this.plugin.saveData(this.plugin.settings);
+          this.plugin.clearSearchCaches();
+          window.setTimeout(() => this.display(), 100);
+        })
+      );
+
+    // Enhanced language preference setting with better descriptions
+    new Setting(containerEl)
+      .setName(t('settings.api.openFoodFactsLanguage'))
+      .setDesc(t('settings.api.openFoodFactsLanguageDesc'))
+      .addDropdown((dropdown) => {
+        dropdown
+          .addOption('auto', t('settings.api.openFoodFactsLanguageAuto'))
+          .addOption('en', t('settings.api.openFoodFactsLanguageEn'))
+          .addOption('fr', t('settings.api.openFoodFactsLanguageFr'))
+          .addOption('de', t('settings.api.openFoodFactsLanguageDe'))
+          .addOption('es', t('settings.api.openFoodFactsLanguageEs'))
+          .addOption('it', t('settings.api.openFoodFactsLanguageIt'))
+          .addOption('pt', t('settings.api.openFoodFactsLanguagePt'))
+          .addOption('zh', t('settings.api.openFoodFactsLanguageZh'))
+          .addOption('ja', t('settings.api.openFoodFactsLanguageJa'))
+          .addOption('ko', t('settings.api.openFoodFactsLanguageKo'))
+          .addOption('ru', t('settings.api.openFoodFactsLanguageRu'))
+          .addOption('ar', t('settings.api.openFoodFactsLanguageAr'))
+          .setValue(this.plugin.settings.openFoodFactsLanguage)
+          .onChange(async (value: string) => {
+            this.plugin.settings.openFoodFactsLanguage = value;
+            await this.plugin.saveData(this.plugin.settings);
+            this.plugin.clearSearchCaches();
+          });
+      });
+
+    // Enhanced data quality filter with better explanations
+    new Setting(containerEl)
+      .setName(t('settings.api.openFoodFactsDataQuality'))
+      .setDesc(t('settings.api.openFoodFactsDataQualityDesc'))
+      .addDropdown((dropdown) => {
+        dropdown
+          .addOption('all', t('settings.api.openFoodFactsDataQualityAll'))
+          .addOption('medium', t('settings.api.openFoodFactsDataQualityMedium'))
+          .addOption('high', t('settings.api.openFoodFactsDataQualityHigh'))
+          .setValue(this.plugin.settings.openFoodFactsDataQualityFilter)
+          .onChange(async (value: 'all' | 'medium' | 'high') => {
+            this.plugin.settings.openFoodFactsDataQualityFilter = value;
+            await this.plugin.saveData(this.plugin.settings);
+            this.plugin.clearSearchCaches();
+          });
+      });
+
+    // Test connection
+    new Setting(containerEl)
+      .setName(t('settings.api.testOpenFoodFactsConnection'))
+      .setDesc(t('settings.api.testOpenFoodFactsConnectionDesc'))
+      .addButton((button) => {
+        button.setButtonText(t('settings.api.testConnection')).onClick(async () => {
+          try {
+            if (!this.plugin.settings.openFoodFactsEnabled) {
+              new Notice(t('settings.api.openFoodFactsNotEnabled'));
+              return;
+            }
+
+            new Notice(t('food.search.searching'));
+
+            // Import and test Open Food Facts search with better error handling
+            const { searchOpenFoodFacts } = await import('../core/openFoodFacts');
+
+            // Get user's locale for testing
+            const userLocale = this.plugin.i18nManager?.getCurrentLocale() || 'en';
+            const offLanguage =
+              this.plugin.settings.openFoodFactsLanguage === 'auto'
+                ? userLocale
+                : this.plugin.settings.openFoodFactsLanguage;
+
+            this.plugin.logger.debug('Testing OFF connection with:', {
+              query: 'apple',
+              language: offLanguage,
+              userLocale,
+            });
+
+            const results = await searchOpenFoodFacts(
+              this.plugin.app,
+              'apple',
+              0,
+              5, // Test with smaller number
+              offLanguage
+            );
+
+            this.plugin.logger.debug('OFF test results:', results);
+
+            if (results.length > 0) {
+              new Notice(
+                t('settings.api.openFoodFactsTestSuccess', { count: results.length.toString() })
+              );
+
+              // Show some details about the first result for debugging
+              const firstResult = results[0];
+              this.plugin.logger.debug('First result details:', {
+                name: firstResult.productName,
+                source: firstResult.source,
+                quality: firstResult.dataQuality,
+                calories: firstResult.calories,
+              });
+            } else {
+              new Notice(t('settings.api.openFoodFactsTestNoResults'));
+            }
+          } catch (error) {
+            console.error('Error during Open Food Facts test connection:', error);
+            if ((error as Error).message?.includes('CORS')) {
+              new Notice(t('settings.api.openFoodFactsTestCORSError'));
+            } else if ((error as Error).message?.includes('network')) {
+              new Notice(t('settings.api.openFoodFactsTestNetworkError'));
+            } else if ((error as Error).message?.includes('timeout')) {
+              new Notice(t('settings.api.openFoodFactsTestTimeoutError'));
+            } else {
+              new Notice(
+                t('settings.api.openFoodFactsTestError', {
+                  error: error instanceof Error ? error.message : String(error),
+                })
+              );
+            }
+          }
+        });
+      });
+
+    // Security note for all APIs
+    containerEl.createEl('p', {
+      text: t('settings.api.securityNote'),
+      cls: 'note-text',
+    });
+  }
+
+  private renderMealTemplatesTab(containerEl: HTMLElement): void {
+    new Setting(containerEl).setName(`🍽️ ${t('settings.meals.title')}`).setHeading();
+
+    containerEl.createEl('p', {
+      text: t('settings.meals.description'),
+      cls: 'setting-item-description',
+    });
+
+    new Setting(containerEl)
+      .setName(t('settings.meals.create'))
+      .setDesc(t('settings.meals.createDesc'))
+      .addButton((btn) => {
+        btn.setButtonText(t('settings.meals.addButton')).onClick((evt) => {
+          evt.preventDefault();
+          new AddMealTemplateModal(this.plugin).open();
+        });
+      });
+
+    if (this.plugin.settings.mealTemplates.length === 0) {
+      containerEl.createDiv({
+        text: t('settings.meals.noTemplates'),
+        cls: 'no-templates-message',
+      });
+    } else {
+      const templateContainer = containerEl.createDiv({ cls: 'meal-templates-container' });
+      this.plugin.settings.mealTemplates.forEach((meal) => {
+        new Setting(templateContainer)
+          .setName(meal.name)
+          .setDesc(meal.items?.length > 0 ? meal.items.join(', ') : t('settings.meals.noItems'))
+          .addButton((editBtn) => {
+            editBtn
+              .setButtonText(t('general.edit'))
+              .setCta()
+              .onClick((evt) => {
+                evt.preventDefault();
+                new EditMealTemplateModal(this.plugin, meal).open();
+              });
+          })
+          .addButton((removeBtn) => {
+            removeBtn
+              .setButtonText(t('general.remove'))
+              .then((b) => b.buttonEl.addClass('mod-warning'))
+              .onClick(async () => {
+                this.plugin.settings.mealTemplates = this.plugin.settings.mealTemplates.filter(
+                  (m) => m.name !== meal.name
+                );
+                await this.plugin.saveData(this.plugin.settings);
+                window.setTimeout(() => this.display(), 300);
+              });
+          });
+      });
+    }
+  }
+
+  private renderFoodTolerancesTab(containerEl: HTMLElement): void {
+    new Setting(containerEl).setName(`🚨 ${t('settings.tolerances.title')}`).setHeading();
+
+    containerEl.createEl('p', {
+      text: t('settings.tolerances.description'),
+      cls: 'setting-item-description',
+    });
+
+    // Display existing tolerances
+    const tolerancesContainer = containerEl.createDiv({ cls: 'tolerances-container' });
+
+    const tolerances = this.plugin.settings.foodTolerances || {};
+    const toleranceEntries = Object.entries(tolerances);
+
+    if (toleranceEntries.length === 0) {
+      tolerancesContainer.createDiv({
+        text: t('settings.tolerances.noTolerances'),
+        cls: 'no-tolerances-message',
+      });
+    } else {
+      toleranceEntries.forEach(([foodName, toleranceData]) => {
+        const toleranceItem = tolerancesContainer.createDiv({ cls: 'tolerance-item' });
+
+        const toleranceHeader = toleranceItem.createDiv({ cls: 'tolerance-header' });
+
+        toleranceHeader.createSpan({
+          cls: 'tolerance-icon',
+          text: toleranceData.severity,
+        });
+
+        toleranceHeader.createSpan({
+          cls: 'tolerance-name',
+          text: foodName.charAt(0).toUpperCase() + foodName.slice(1),
+        });
+
+        const toleranceActions = toleranceHeader.createDiv({ cls: 'tolerance-actions' });
+
+        const viewBtn = toleranceActions.createEl('button', {
+          text: t('general.view'),
+          cls: 'mod-button mod-muted',
+        });
+
+        const removeBtn = toleranceActions.createEl('button', {
+          text: t('general.remove'),
+          cls: 'mod-button mod-warning',
+        });
+
+        // Add symptoms display
+        if (toleranceData.symptoms) {
+          toleranceItem.createDiv({
+            cls: 'tolerance-symptoms',
+            text: toleranceData.symptoms,
+          });
+        }
+
+        // Add date added
+        toleranceItem.createDiv({
+          cls: 'tolerance-date',
+          text: t('settings.tolerances.dateAdded', {
+            date: new Date(toleranceData.dateAdded).toLocaleDateString(),
+          }),
+        });
+
+        // View button handler
+        viewBtn.addEventListener('click', () => {
+          new Notice(`${toleranceData.severity} ${foodName}: ${toleranceData.symptoms}`);
+        });
+
+        // Remove button handler
+        removeBtn.addEventListener('click', () => {
+          delete this.plugin.settings.foodTolerances[foodName];
+          void this.plugin.saveData(this.plugin.settings);
+          this.display(); // Refresh the settings page
+          new Notice(t('settings.tolerances.toleranceRemoved', { foodName }));
+        });
+      });
+    }
+
+    // Clear all tolerances button (only show if there are tolerances)
+    if (toleranceEntries.length > 0) {
+      new Setting(containerEl)
+        .setName(t('settings.tolerances.clearAll'))
+        .setDesc(t('settings.tolerances.clearAllDesc'))
+        .addButton((btn) => {
+          btn
+            .setButtonText(t('settings.tolerances.clearAllButton'))
+            .then((b) => b.buttonEl.addClass('mod-warning'))
+            .onClick(async () => {
+              this.plugin.settings.foodTolerances = {};
+              await this.plugin.saveData(this.plugin.settings);
+              this.display(); // Refresh the settings page
+              new Notice(t('settings.tolerances.allTolerancesCleared'));
+            });
+        });
+    }
+  }
+
+  private renderMicronutrientsTab(containerEl: HTMLElement): void {
+    const profile: MicronutrientProfile = this.plugin.settings.micronutrientProfile;
+    const overrides = this.plugin.settings.micronutrientTargets || {};
+
+    new Setting(containerEl).setName(`💊 ${t('settings.micronutrients.title')}`).setHeading();
+
+    containerEl.createEl('p', {
+      text: t('settings.micronutrients.description'),
+      cls: 'setting-item-description',
+    });
+
+    // =======================================
+    // MASTER ENABLE TOGGLE
+    // =======================================
+    new Setting(containerEl)
+      .setName(t('settings.micronutrients.enable'))
+      .setDesc(t('settings.micronutrients.enableDesc'))
+      .addToggle((toggle) => {
+        toggle
+          .setValue(this.plugin.settings.micronutrientTrackingEnabled)
+          .onChange(async (value) => {
+            this.plugin.settings.micronutrientTrackingEnabled = value;
+            await this.plugin.saveData(this.plugin.settings);
+            this.plugin.refreshManager.scheduleLiveRefresh();
+            this.display();
+          });
+      });
+
+    // When tracking is disabled, hide the rest of the configuration
+    if (!this.plugin.settings.micronutrientTrackingEnabled) {
+      containerEl.createEl('p', {
+        text: t('settings.micronutrients.disabledNote'),
+        cls: 'setting-item-description',
+      });
+      return;
+    }
+
+    // =======================================
+    // PERSONAL PROFILE
+    // =======================================
+    new Setting(containerEl).setName(t('settings.micronutrients.profileTitle')).setHeading();
+
+    containerEl.createEl('p', {
+      text: t('settings.micronutrients.profileDesc'),
+      cls: 'setting-item-description',
+    });
+
+    new Setting(containerEl)
+      .setName(t('settings.micronutrients.sex'))
+      .setDesc(t('settings.micronutrients.sexDesc'))
+      .addDropdown((dropdown) => {
+        dropdown
+          .addOption('male', t('settings.micronutrients.sexMale'))
+          .addOption('female', t('settings.micronutrients.sexFemale'))
+          .setValue(profile.sex)
+          .onChange(async (value: string) => {
+            if (value === 'male' || value === 'female') {
+              profile.sex = value;
+              // Life stage only applies to female profiles
+              if (value === 'male') {
+                profile.lifeStage = 'none';
+              }
+              await this.plugin.saveData(this.plugin.settings);
+              this.display();
+            }
+          });
+      });
+
+    new Setting(containerEl)
+      .setName(t('settings.micronutrients.age'))
+      .setDesc(t('settings.micronutrients.ageDesc'))
+      .addText((text) => {
+        text
+          .setValue(profile.age.toString())
+          .setPlaceholder('30')
+          .onChange(async (value) => {
+            const numValue = parseFloat(value);
+            if (!isNaN(numValue) && numValue >= 0 && numValue <= 120) {
+              profile.age = numValue;
+              await this.plugin.saveData(this.plugin.settings);
+              // Refresh recommended values without losing focus too aggressively
+              this.refreshMicronutrientRecommendations(containerEl);
+            }
+          });
+      });
+
+    // Life stage only relevant for female profiles
+    if (profile.sex === 'female') {
+      new Setting(containerEl)
+        .setName(t('settings.micronutrients.lifeStage'))
+        .setDesc(t('settings.micronutrients.lifeStageDesc'))
+        .addDropdown((dropdown) => {
+          dropdown
+            .addOption('none', t('settings.micronutrients.lifeStageNone'))
+            .addOption('pregnancy', t('settings.micronutrients.lifeStagePregnancy'))
+            .addOption('lactation', t('settings.micronutrients.lifeStageLactation'))
+            .setValue(profile.lifeStage)
+            .onChange(async (value: string) => {
+              if (value === 'none' || value === 'pregnancy' || value === 'lactation') {
+                profile.lifeStage = value;
+                await this.plugin.saveData(this.plugin.settings);
+                this.display();
+              }
+            });
+        });
+    }
+
+    // Show the resolved life-stage group so the user understands the basis of defaults
+    const group = resolveLifeStageGroup(profile);
+    const groupInfo = containerEl.createDiv({ cls: 'micronutrient-profile-info' });
+    groupInfo.createEl('p', {
+      text: t('settings.micronutrients.basisNote', {
+        group: this.formatLifeStageGroup(group),
+      }),
+      cls: 'setting-item-description',
+    });
+
+    // =======================================
+    // PINNED MICRONUTRIENTS
+    // =======================================
+    // Pin state is changed per nutrient in the targets list below. Buttons are
+    // updated in place (no full re-render) so the long list keeps its scroll
+    // position while the user pins several nutrients in a row.
+    const pinButtonUpdaters = new Map<string, () => void>();
+
+    new Setting(containerEl).setName(t('settings.micronutrients.pinnedTitle'));
+
+    containerEl.createEl('p', {
+      text: t('settings.micronutrients.pinnedDesc'),
+      cls: 'setting-item-description',
+    });
+
+    const pinnedSummary = new Setting(containerEl).setName(
+      t('settings.micronutrients.pinnedCurrent')
+    );
+
+    const updatePinnedSummary = () => {
+      const pinned = getPinnedMicronutrientKeys(this.plugin.settings.pinnedMicronutrients);
+      pinnedSummary.setDesc(
+        pinned.length > 0
+          ? pinned.map((key) => MICRONUTRIENT_MAP[key].label).join(', ')
+          : t('settings.micronutrients.pinnedNone')
+      );
+      pinnedSummary.setDisabled(pinned.length === 0);
+    };
+
+    pinnedSummary.addButton((btn) => {
+      btn.setButtonText(t('settings.micronutrients.unpinAll')).onClick(async () => {
+        this.plugin.settings.pinnedMicronutrients = [];
+        await this.plugin.saveData(this.plugin.settings);
+        this.plugin.refreshManager.scheduleLiveRefresh();
+        pinButtonUpdaters.forEach((update) => update());
+        updatePinnedSummary();
+      });
+    });
+    updatePinnedSummary();
+
+    // =======================================
+    // TARGETS
+    // =======================================
+    new Setting(containerEl).setName(t('settings.micronutrients.targetsTitle'));
+
+    containerEl.createEl('p', {
+      text: t('settings.micronutrients.targetsDesc'),
+      cls: 'setting-item-description',
+    });
+
+    // Reset all overrides
+    new Setting(containerEl)
+      .setName(t('settings.micronutrients.resetAll'))
+      .setDesc(t('settings.micronutrients.resetAllDesc'))
+      .addButton((btn) => {
+        btn
+          .setButtonText(t('settings.micronutrients.resetAllButton'))
+          .then((b) => b.buttonEl.addClass('mod-warning'))
+          .onClick(async () => {
+            this.plugin.settings.micronutrientTargets = {};
+            await this.plugin.saveData(this.plugin.settings);
+            this.plugin.refreshManager.scheduleLiveRefresh();
+            this.display();
+            new Notice(t('settings.micronutrients.resetAllDone'));
+          });
+      });
+
+    const targetsContainer = containerEl.createDiv({ cls: 'micronutrient-targets-container' });
+
+    const categories: { id: MicronutrientCategory; labelKey: string }[] = [
+      { id: 'vitamin', labelKey: 'settings.micronutrients.categoryVitamins' },
+      { id: 'mineral', labelKey: 'settings.micronutrients.categoryMinerals' },
+      { id: 'other', labelKey: 'settings.micronutrients.categoryOther' },
+    ];
+
+    for (const category of categories) {
+      const nutrients = MICRONUTRIENTS.filter((n) => n.category === category.id);
+      if (nutrients.length === 0) continue;
+
+      new Setting(targetsContainer).setName(t(category.labelKey)).setHeading();
+
+      for (const def of nutrients) {
+        const recommended = getRecommendedValue(def, profile);
+        const override = overrides[def.key];
+        const hasOverride = override != null && Number.isFinite(override);
+        const effective = hasOverride ? override : recommended;
+
+        const recommendedText =
+          recommended != null
+            ? t('settings.micronutrients.recommendedValue', {
+                value: recommended.toString(),
+                unit: def.unit,
+              })
+            : t('settings.micronutrients.noRecommendation');
+
+        const limitNote = def.isLimit ? ` ${t('settings.micronutrients.limitNote')}` : '';
+
+        const setting = new Setting(targetsContainer)
+          .setName(`${def.label} (${def.unit})`)
+          .setDesc(recommendedText + limitNote);
+
+        setting.settingEl.dataset.microKey = def.key;
+
+        setting.addText((text) => {
+          text
+            .setPlaceholder(recommended != null ? recommended.toString() : '')
+            .setValue(effective != null && hasOverride ? effective.toString() : '')
+            .onChange(async (value) => {
+              const trimmed = value.trim();
+              if (trimmed === '') {
+                // Empty => revert to recommended default
+                delete this.plugin.settings.micronutrientTargets[def.key];
+              } else {
+                const numValue = parseFloat(trimmed);
+                if (!isNaN(numValue) && numValue >= 0) {
+                  this.plugin.settings.micronutrientTargets[def.key] = numValue;
+                }
+              }
+              await this.plugin.saveData(this.plugin.settings);
+              this.plugin.refreshManager.scheduleLiveRefresh();
+            });
+          // When not overridden, show the recommended value as a faint placeholder only
+          if (!hasOverride && recommended != null) {
+            text.inputEl.classList.add('micronutrient-input-default');
+          }
+        });
+
+        // Per-row reset to recommended (only meaningful when overridden)
+        setting.addExtraButton((btn) => {
+          btn
+            .setIcon('rotate-ccw')
+            .setTooltip(t('settings.micronutrients.resetToRecommended'))
+            .onClick(async () => {
+              delete this.plugin.settings.micronutrientTargets[def.key];
+              await this.plugin.saveData(this.plugin.settings);
+              this.plugin.refreshManager.scheduleLiveRefresh();
+              pinButtonUpdaters.forEach((update) => update());
+              updatePinnedSummary();
+            });
+        });
+      }
+    }
+  }
+
+  private renderAdvancedTab(containerEl: HTMLElement): void {
+    new Setting(containerEl).setName(`🔧 ${t('settings.advanced.title')}`).setHeading();
+
+    new Setting(containerEl)
+      .setName(t('settings.advanced.developerMode'))
+      .setDesc(t('settings.advanced.developerModeDesc'))
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.developerModeEnabled).onChange(async (value) => {
+          this.plugin.settings.developerModeEnabled = value;
+          await this.plugin.saveData(this.plugin.settings);
+          this.plugin.logger.setDebugMode(value);
+        })
+      );
+  }
+
+  private renderSupportTab(containerEl: HTMLElement): void {
+    new Setting(containerEl).setName(t('settings.support.title')).setHeading();
+
+    containerEl.createEl('p', {
+      text: t('settings.support.description'),
+      cls: 'setting-item-description',
+    });
+
+    // Buy me a coffee section
+    const coffeeContainer = containerEl.createDiv({ cls: 'buy-me-coffee-container' });
+
+    coffeeContainer.createEl('p', {
+      text: t('settings.support.coffeeText'),
+    });
+
+    // Create the buy me a coffee button using an iframe
+    coffeeContainer.createEl('iframe', {
+      attr: {
+        src: 'https://www.buymeacoffee.com/widget/page/jamescliffordspratt?description=Support%20the%20Macros%20Plugin&color=%23FFDD00',
+        width: '100%',
+        height: '400',
+        frameborder: '0',
+        scrolling: 'no',
+      },
+    });
+
+    // Documentation and links section
+    new Setting(containerEl).setName(t('settings.support.linksTitle')).setHeading();
+
+    const linksContainer = containerEl.createDiv({ cls: 'support-links-container' });
+
+    linksContainer.createEl('p', {
+      text: t('settings.support.linksDescription'),
+    });
+
+    const linksList = linksContainer.createEl('ul');
+
+    // GitHub repository
+    const githubItem = linksList.createEl('li');
+    githubItem.createEl('a', {
+      text: t('settings.support.githubLink'),
+      attr: {
+        href: 'https://github.com/JamesCliffordSpratt/macros',
+        target: '_blank',
+      },
+    });
+
+    // Documentation
+    const docsItem = linksList.createEl('li');
+    docsItem.createEl('a', {
+      text: t('settings.support.docsLink'),
+      attr: {
+        href: 'https://github.com/JamesCliffordSpratt/macros/wiki',
+        target: '_blank',
+      },
+    });
+
+    // Report issues
+    const issuesItem = linksList.createEl('li');
+    issuesItem.createEl('a', {
+      text: t('settings.support.issuesLink'),
+      attr: {
+        href: 'https://github.com/JamesCliffordSpratt/macros/issues',
+        target: '_blank',
+      },
+    });
+
+    // Plugin info section
+    new Setting(containerEl).setName(t('settings.support.pluginInfoTitle')).setHeading();
+
+    const infoContainer = containerEl.createDiv({ cls: 'plugin-info-container' });
+
+    infoContainer.createEl('p', {
+      text: t('settings.support.pluginVersion', { version: this.plugin.manifest.version }),
+    });
+
+    infoContainer.createEl('p', {
+      text: t('settings.support.pluginAuthor', { author: this.plugin.manifest.author }),
+    });
+
+    infoContainer.createEl('p', {
+      text: t('settings.support.pluginDescription', {
+        description: this.plugin.manifest.description,
+      }),
+    });
+
+    // Thanks section
+    const thanksContainer = containerEl.createDiv({ cls: 'thanks-container' });
+    thanksContainer.createEl('p', {
+      text: t('settings.support.thanksMessage'),
+    });
+  }
+
+  /**
+   * Initialize the Chart.js preview chart
+   */
+  async initChartPreview(canvas: HTMLCanvasElement): Promise<void> {
+    try {
+      // Get ChartLoader instance
+      const chartLoader = ChartLoader.getInstance();
+
+      // Make sure no chart exists with this ID before creating a new one
+      if (this.previewChart) {
+        chartLoader.destroyChart(this.chartId);
+        this.previewChart = null;
+      }
+
+      // Ensure Chart.js is loaded using ChartLoader
+      await chartLoader.loadChart();
+
+      // Initialize the chart
+      this.updateChartPreview(canvas);
+    } catch (error) {
+      console.error('Error initializing chart preview:', error);
+
+      // Fallback to simple preview if Chart.js fails to load
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.1)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        ctx.fillStyle = '#333';
+        ctx.font = '14px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(
+          t('notifications.chartPreviewUnavailable'),
+          canvas.width / 2,
+          canvas.height / 2
+        );
+      }
+    }
+  }
+
+  /**
+   * Update the Chart.js preview with current settings
+   */
+  updateChartPreview(canvas?: HTMLCanvasElement): void {
+    // If we already have a canvas reference, use that, otherwise find it in the DOM
+    if (!canvas && this.previewChart) {
+      canvas = this.previewChart.canvas;
+    }
+
+    if (!canvas) {
+      const canvasEl = this.containerEl.querySelector('.macrospc-preview-container canvas');
+      if (!canvasEl) {
+        console.error('Cannot find preview canvas');
+        return;
+      }
+      canvas = canvasEl as HTMLCanvasElement;
+    }
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    // Get current colors from settings
+    const proteinColor = this.plugin.settings.proteinColor;
+    const fatColor = this.plugin.settings.fatColor;
+    const carbsColor = this.plugin.settings.carbsColor;
+
+    // If we already have a chart, update its colors
+    if (this.previewChart) {
+      const dataset = this.previewChart.data.datasets[0];
+      if (dataset) {
+        dataset.backgroundColor = [proteinColor, fatColor, carbsColor];
+        this.previewChart.update();
+      }
+      return;
+    }
+
+    canvas.addClass('settings-preview-canvas');
+
+    // Use the centralized chart creation method from ChartManager
+    try {
+      this.previewChart = this.plugin.chartManager.createPieChart(
+        ctx,
+        this.chartId,
+        [33, 33, 34], // Example data (evenly distributed)
+        [t('table.headers.protein'), t('table.headers.fat'), t('table.headers.carbs')],
+        [proteinColor, fatColor, carbsColor]
+      );
+
+      // Override some options for the settings preview
+      if (this.previewChart?.options?.plugins) {
+        // Enable legend for the preview chart
+        const legend = this.previewChart.options.plugins.legend;
+        if (legend) {
+          legend.display = true;
+          legend.position = 'bottom';
+
+          if (legend.labels) {
+            legend.labels.padding = 15;
+            legend.labels.usePointStyle = true;
+            // Use proper type assertion for Chart.js legend labels
+            (legend.labels as { pointStyle?: string }).pointStyle = 'circle';
+          }
+        }
+
+        // Update tooltip formatting
+        const tooltip = this.previewChart.options.plugins.tooltip;
+        if (tooltip?.callbacks) {
+          tooltip.callbacks.label = function (context) {
+            const label = context.label || '';
+            const value = (context.raw as number) || 0;
+            return `${label}: ${value}%`;
+          };
+        }
+      }
+
+      // Apply the changes
+      if (this.previewChart) {
+        this.previewChart.update();
+      }
+    } catch (error) {
+      console.error('Error creating preview chart:', error);
+    }
+  }
+
+  /**
+   * Format a life-stage group key into a human-readable label.
+   */
+  private formatLifeStageGroup(group: string): string {
+    return group
+      .split('_')
+      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(' ');
+  }
+
+  /**
+   * Refresh micronutrient recommendations display after profile changes.
+   */
+  private refreshMicronutrientRecommendations(containerEl: HTMLElement): void {
+    // Re-render the micronutrients tab to update recommended values
+    this.renderMicronutrientsTab(containerEl);
+  }
+}

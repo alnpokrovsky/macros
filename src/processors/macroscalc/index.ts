@@ -3,19 +3,7 @@ import { processNutritionalDataFromLines } from './calculator';
 import { MacrosCalcRenderer } from './MacrosCalcRenderer';
 import { MetricsRegistry, registerBuiltinMetrics } from './metrics';
 import { t } from '../../lang/I18nManager';
-
-interface MacrosCalcRenderer_Interface {
-  el: HTMLElement;
-  getIds: () => string[];
-  render: (
-    aggregate: { calories: number; protein: number; fat: number; carbs: number },
-    breakdown: Array<{
-      id: string;
-      totals: { calories: number; protein: number; fat: number; carbs: number };
-    }>
-  ) => Promise<void>;
-  setNeedsRefresh?: () => void;
-}
+import type { MacrosCalcRenderer as MacrosCalcRendererType } from '../../utils/types';
 
 export function registerMacrosCalcProcessor(plugin: MacrosPlugin): void {
   // Initialize metrics system
@@ -119,6 +107,7 @@ export function registerMacrosCalcProcessor(plugin: MacrosPlugin): void {
 
   // Replace the redrawAllMacrocalc method with a more forceful version
   plugin.redrawAllMacrocalc = async function () {
+    await plugin.refreshManager.refreshAllMacroscalc();
     await forceRefreshAllRenderers(plugin);
   };
 }
@@ -189,7 +178,7 @@ async function forceRefreshAllRenderers(plugin: MacrosPlugin): Promise<void> {
     // Also clean up the renderer registry
     if (plugin.macroService._activeMacrosCalcRenderers) {
       // Create a new set with only valid renderers
-      const validRenderers = new Set<MacrosCalcRenderer_Interface>();
+      const validRenderers = new Set<MacrosCalcRendererType>();
 
       for (const renderer of plugin.macroService._activeMacrosCalcRenderers) {
         // Check if the renderer's element is still in the DOM

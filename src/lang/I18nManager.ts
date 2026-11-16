@@ -53,7 +53,7 @@ export class I18nManager {
   private fallbackLocale = 'en';
   private translations: Map<string, LocaleData> = new Map();
   private supportedLocales: Map<string, SupportedLocale> = new Map();
-  private static instance: I18nManager;
+  private static instance: I18nManager | null = null;
 
   private constructor(plugin: MacrosPlugin) {
     this.plugin = plugin;

@@ -1,5 +1,5 @@
 import MacrosPlugin from '../main';
-import { NutritionalSettingTab } from './StorageService';
+import { NutritionalSettingTab } from './SettingsTab';
 
 /**
  * SettingManager

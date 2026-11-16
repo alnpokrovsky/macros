@@ -2,6 +2,7 @@
  * Mock for the `obsidian` package (type-definitions only, no runtime JS).
  * Provides the minimal surface used by DataManager and related modules.
  */
+/* global jest */
 
 class TFile {
   constructor(path) {

@@ -163,6 +163,22 @@ export async function searchUsda(
 }
 
 /**
+ * Priority score for a food search result (higher = preferred).
+ * Order: USDA Foundation (6) > USDA SR Legacy (5) > Open Food Facts high (4) >
+ * FatSecret (3) > Open Food Facts medium (2) > USDA Branded (1) > Open Food Facts low (0).
+ */
+function getFoodResultPriority(r: UnifiedFoodResult): number {
+  if (r.source === 'usda' && r.isFoundation) return 6;
+  if (r.source === 'usda' && r.isSrLegacy) return 5;
+  if (r.source === 'openfoodfacts' && r.dataQuality === 'high') return 4;
+  if (r.source === 'fatsecret') return 3;
+  if (r.source === 'openfoodfacts' && r.dataQuality === 'medium') return 2;
+  if (r.source === 'usda' && r.isBranded) return 1;
+  if (r.source === 'openfoodfacts' && r.dataQuality === 'low') return 0;
+  return 0;
+}
+
+/**
  * Enhanced merge and deduplication with Open Food Facts prioritization
  * Priority order: USDA Foundation > USDA SR Legacy > Open Food Facts (high quality) > FatSecret > Open Food Facts (medium/low quality) > USDA Branded
  * @param results Array of result arrays to merge
@@ -186,19 +202,7 @@ export function mergeAndDedupeResults(...results: UnifiedFoodResult[][]): Unifie
     if (resultMap.has(normalizedKey)) {
       const existing = resultMap.get(normalizedKey);
 
-      // Enhanced priority order including Open Food Facts
-      const getResultPriority = (r: UnifiedFoodResult): number => {
-        if (r.source === 'usda' && r.isFoundation) return 6; // Highest priority
-        if (r.source === 'usda' && r.isSrLegacy) return 5;
-        if (r.source === 'openfoodfacts' && r.dataQuality === 'high') return 4;
-        if (r.source === 'fatsecret') return 3;
-        if (r.source === 'openfoodfacts' && r.dataQuality === 'medium') return 2;
-        if (r.source === 'usda' && r.isBranded) return 1;
-        if (r.source === 'openfoodfacts' && r.dataQuality === 'low') return 0;
-        return 0;
-      };
-
-      if (getResultPriority(result) > getResultPriority(existing)) {
+      if (getFoodResultPriority(result) > getFoodResultPriority(existing)) {
         resultMap.set(normalizedKey, result);
       }
     } else {
@@ -211,18 +215,7 @@ export function mergeAndDedupeResults(...results: UnifiedFoodResult[][]): Unifie
 
   // Enhanced sorting with Open Food Facts considerations
   return deduped.sort((a, b) => {
-    // Primary sort: Enhanced source and type priority
-    const getPriority = (r: UnifiedFoodResult): number => {
-      if (r.source === 'usda' && r.isFoundation) return 6;
-      if (r.source === 'usda' && r.isSrLegacy) return 5;
-      if (r.source === 'openfoodfacts' && r.dataQuality === 'high') return 4;
-      if (r.source === 'fatsecret') return 3;
-      if (r.source === 'openfoodfacts' && r.dataQuality === 'medium') return 2;
-      if (r.source === 'usda' && r.isBranded) return 1;
-      return 0;
-    };
-
-    const priorityDiff = getPriority(b) - getPriority(a);
+    const priorityDiff = getFoodResultPriority(b) - getFoodResultPriority(a);
     if (priorityDiff !== 0) return priorityDiff;
 
     // Secondary sort for Open Food Facts: nutrition grade and completeness

@@ -66,7 +66,7 @@ export class AddFoodToMealModal extends Modal {
           defaultServing,
           async (customServing: number) => {
             this.meal.items.push(`${selected}:${customServing}g`);
-            await this.plugin.saveSettings();
+            await this.plugin.saveData(this.plugin.settings);
             this.refreshItemList();
             new Notice(t('notifications.itemsAdded', { count: '1' }));
           },
@@ -102,7 +102,7 @@ export class AddFoodToMealModal extends Modal {
 
       this.component.registerDomEvent(removeBtn, 'click', async () => {
         this.meal.items.splice(index, 1);
-        await this.plugin.saveSettings();
+        await this.plugin.saveData(this.plugin.settings);
         this.refreshItemList();
         new Notice(t('general.remove') + ` "${item}" ${t('general.from')} ${this.meal.name}`);
       });

@@ -935,7 +935,7 @@ class ManualBarcodeEntryModal extends Modal {
     contentEl.createEl('h2', { text: 'Enter barcode manually' });
 
     contentEl.createEl('p', {
-      text: 'Enter the numbers from the barcode (EAN/UPC codes are typically 8-13 digits):',
+      text: 'Enter the numbers from the barcode (ean/upc codes are typically 8-13 digits):',
       cls: 'modal-description',
     });
 

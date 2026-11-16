@@ -37,7 +37,7 @@ function accumulateFood(
 ): void {
   if (!query || query.trim() === '') return;
 
-  const file = plugin.findFoodFile(query);
+  const file = plugin.macroService.findFoodFile(query);
   if (!file) {
     result.unresolved.push(query);
     return;
@@ -120,7 +120,7 @@ export async function aggregateMicronutrientsForIds(
   };
 
   for (const id of ids) {
-    const lines = await plugin.getFullMacrosData(id);
+    const lines = await plugin.dataManager.getFullMacrosData(id);
     if (!lines || lines.length === 0) continue;
 
     const partial = aggregateMicronutrientsFromLines(lines, plugin);

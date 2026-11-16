@@ -27,7 +27,7 @@ export class MacrosState {
       this.plugin.settings.uiCollapseStates = {};
     }
     this.plugin.settings.uiCollapseStates[key] = isCollapsed;
-    void this.plugin.saveSettings();
+    void this.plugin.saveData(this.plugin.settings);
   }
 
   /** Load collapsed/expanded state from plugin settings */
@@ -45,7 +45,7 @@ export class MacrosState {
         delete states[key];
       }
     }
-    void this.plugin.saveSettings();
+    void this.plugin.saveData(this.plugin.settings);
   }
 
   /** Clear all states for the entire plugin */
@@ -57,7 +57,7 @@ export class MacrosState {
         delete states[key];
       }
     }
-    void plugin.saveSettings();
+    void plugin.saveData(plugin.settings);
   }
 
   /**

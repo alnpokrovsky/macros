@@ -23,6 +23,15 @@ export default [
       'versions.json',
       'package-lock.json',
       'tsconfig*.json',
+      // OMC runtime state — not project source code (recursive).
+      '.omc/**',
+      '**/.omc/**',
+      '.claude/**',
+      '**/.claude/**',
+      // Graphify knowledge graph output — not project source code.
+      'graphify-out/**',
+      // Test mocks — not type-checked source code.
+      'tests/mocks/**',
     ],
   },
 

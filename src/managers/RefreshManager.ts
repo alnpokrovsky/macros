@@ -320,7 +320,8 @@ export class RefreshManager {
               // Get IDs and recalculate
               if (typeof renderer.getIds === 'function' && typeof renderer.render === 'function') {
                 const ids = renderer.getIds();
-                const { aggregate, breakdown } = this.plugin.processNutritionalDataFromLines(ids);
+                const { aggregate, breakdown } =
+                  this.plugin.macroService.processNutritionalDataFromLines(ids);
                 await renderer.render(aggregate, breakdown);
               }
             } catch (error) {

@@ -19,6 +19,13 @@ export class APIService {
     this.instance = null;
   }
 
+  static getInstance(): APIService {
+    if (!this.instance) {
+      throw new Error('APIService not initialized.');
+    }
+    return this.instance;
+  }
+
   /**
    * Check if API credentials are configured
    */

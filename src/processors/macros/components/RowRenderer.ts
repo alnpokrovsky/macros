@@ -257,7 +257,7 @@ export class RowRenderer {
         commentTarget,
         async () => {
           // Refresh the table after comment update
-          await this.plugin.forceCompleteReload();
+          await this.plugin.refreshManager.forceCompleteRefresh();
         },
         // Add remove callback for mobile
         async () => {
@@ -268,7 +268,7 @@ export class RowRenderer {
       );
     };
 
-    this.plugin.registerDomListener(tableRow, 'contextmenu', contextMenuHandler);
+    this.plugin.registerDomEvent(tableRow, 'contextmenu', contextMenuHandler);
   }
 
   /**
@@ -520,7 +520,7 @@ export class RowRenderer {
         originalItemText
       );
 
-      await this.plugin.forceCompleteReload();
+      await this.plugin.refreshManager.forceCompleteRefresh();
     }
   }
 
@@ -582,7 +582,7 @@ export class RowRenderer {
         await this.removeMealItemFromBlock(macrosId, cleanContainerName, foodName);
       }
 
-      await this.plugin.forceCompleteReload();
+      await this.plugin.refreshManager.forceCompleteRefresh();
     } catch (error) {
       this.plugin.logger.error('Error removing meal/group item:', error);
       throw error;

@@ -1,9 +1,14 @@
 import { TFolder, TFile, normalizePath } from 'obsidian';
 import MacrosPlugin from '../main';
-import { processNutritionalData } from '../utils/nutritionUtils';
+import {
+  processNutritionalData,
+  extractServingSize,
+  extractNutritionalData,
+} from '../utils/nutritionUtils';
 import { fetchFatSecretMicronutrients, FoodItem } from '../core/api';
 import { UnifiedFoodResult } from '../core/search';
 import { OffFoodResult } from '../core/openFoodFacts';
+import type { MacrosCalcRenderer } from '../utils/types';
 import {
   MICRONUTRIENT_KEYS,
   MICRONUTRIENT_MAP,
@@ -22,26 +27,6 @@ interface MacrosStructure {
 interface NewItemsStructure {
   meals: Map<string, Map<string, number>>;
   individualItems: Map<string, number>;
-}
-
-// FIX: Add proper type for active renderers instead of any
-interface MacroTotals {
-  calories: number;
-  protein: number;
-  fat: number;
-  carbs: number;
-}
-
-interface CalcBreakdown {
-  id: string;
-  totals: MacroTotals;
-}
-
-interface MacrosCalcRenderer {
-  el: HTMLElement;
-  getIds: () => string[];
-  render: (aggregate: MacroTotals, breakdown: CalcBreakdown[]) => Promise<void>;
-  setNeedsRefresh?: () => void;
 }
 
 /**
@@ -334,8 +319,8 @@ export class DataManager {
             // Handle FatSecret format (existing code)
             const fsRaw = selectedFood.raw as { food_description?: string } | undefined;
             if (fsRaw && fsRaw.food_description) {
-              servingSize = this.extractServingSize(fsRaw.food_description);
-              nutritionalData = this.extractNutritionalData(fsRaw.food_description);
+              servingSize = extractServingSize(fsRaw.food_description);
+              nutritionalData = extractNutritionalData(fsRaw.food_description);
             } else {
               servingSize = `${selectedFood.gramsServing}g`;
               nutritionalData = this.extractNutritionalDataFromDescription(
@@ -350,8 +335,8 @@ export class DataManager {
         } else {
           // Handle legacy FoodItem format (existing code)
           foodName = selectedFood.food_name;
-          servingSize = this.extractServingSize(selectedFood.food_description);
-          nutritionalData = this.extractNutritionalData(selectedFood.food_description);
+          servingSize = extractServingSize(selectedFood.food_description);
+          nutritionalData = extractNutritionalData(selectedFood.food_description);
           additionalMetadata = {
             source: 'fatsecret',
           };
@@ -607,46 +592,6 @@ ${additionalMetadata.ingredients}`;
       }
     };
   }
-  /**
-   * Helper method to extract serving size (keep existing implementation)
-   */
-  private extractServingSize(description: string): string {
-    try {
-      const regex = /Per\s*(\d+(\.\d+)?)\s*(g|medium|large|slice|cup|tbsp|oz)/i;
-      const match = description.match(regex);
-      return match ? `${match[1]}${match[3]}` : '100g';
-    } catch (error) {
-      console.error('Error extracting serving size:', error);
-      return '100g';
-    }
-  }
-
-  /**
-   * Helper method to extract nutritional data (keep existing implementation)
-   */
-  private extractNutritionalData(description: string): {
-    calories: string;
-    fat: string;
-    carbs: string;
-    protein: string;
-  } {
-    try {
-      const caloriesMatch = description.match(/Calories:\s*(\d+(\.\d+)?)kcal/i);
-      const fatMatch = description.match(/Fat:\s*(\d+(\.\d+)?)g/i);
-      const carbsMatch = description.match(/Carbs:\s*(\d+(\.\d+)?)g/i);
-      const proteinMatch = description.match(/Protein:\s*(\d+(\.\d+)?)g/i);
-      return {
-        calories: caloriesMatch ? caloriesMatch[1] : '0',
-        fat: fatMatch ? fatMatch[1] : '0',
-        carbs: carbsMatch ? carbsMatch[1] : '0',
-        protein: proteinMatch ? proteinMatch[1] : '0',
-      };
-    } catch (error) {
-      console.error('Error extracting nutritional data:', error);
-      return { calories: '0', fat: '0', carbs: '0', protein: '0' };
-    }
-  }
-
   /**
    * Helper method to extract nutritional data from generic description
    */
@@ -938,9 +883,9 @@ ${additionalMetadata.ingredients}`;
           this.plugin.app.metadataCache.trigger('changed', activeFile);
 
           // Force refresh all views
-          this.plugin.refreshMacrosTables();
-          await this.plugin.redrawAllMacrospc();
-          await this.plugin.redrawAllMacrocalc();
+          this.plugin.refreshManager.scheduleLiveRefresh();
+          await this.plugin.refreshManager.refreshAllMacrospc();
+          await this.plugin.refreshManager.refreshAllMacroscalc();
 
           this.plugin.logger.debug(
             `Successfully updated macros blocks: ${Array.from(processedIds).join(', ')}`
@@ -1162,7 +1107,7 @@ ${additionalMetadata.ingredients}`;
       const foodName = itemText.trim();
 
       // Try to get default serving from food file
-      const matchingFile = this.findFoodFile(foodName);
+      const matchingFile = this.plugin.macroService.findFoodFile(foodName);
       if (matchingFile) {
         const nutrition = processNutritionalData(this.plugin.app, matchingFile);
         if (nutrition && nutrition.serving) {

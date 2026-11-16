@@ -126,7 +126,7 @@ export function registerMacrosPCProcessor(plugin: MacrosPlugin): void {
       // Defer until the element is visible so the chart paints on cold start
       // (a restored note can render in a deferred/hidden leaf).
       drawWhenVisible(el, () => {
-        void plugin.drawMacrospc(ids, el, width, height);
+        void plugin.chartManager.drawMacrospc(ids, el, width, height);
       });
       plugin.logger.debug(`Scheduled chart draw for IDs: ${ids.join(', ')}`);
     } catch (error) {
