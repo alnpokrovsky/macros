@@ -93,9 +93,24 @@ export default [
   // Lint the English locale source for sentence-case UI strings. The
   // recommended config can't see these (they go through t()), so enable the
   // locale-module rule on en.ts only (other locales aren't English prose).
+  // Brands/acronyms/units are preserved so UI text isn't corrupted.
   {
     files: ['**/en.ts'],
-    rules: { 'obsidianmd/ui/sentence-case-locale-module': 'warn' },
+    rules: {
+      'obsidianmd/ui/sentence-case-locale-module': ['warn', {
+        brands: ['Macros', 'Open Food Facts', 'FatSecret', 'Obsidian', 'FoodData Central', 'g', 'kcal'],
+        acronyms: [
+          'API', 'HTTP', 'HTTPS', 'URL', 'DNS', 'TCP', 'IP', 'SSH', 'TLS',
+          'SSL', 'FTP', 'SFTP', 'SMTP', 'JSON', 'XML', 'HTML', 'CSS', 'PDF',
+          'CSV', 'YAML', 'SQL', 'PNG', 'JPG', 'JPEG', 'GIF', 'SVG', '2FA',
+          'MFA', 'OAuth', 'JWT', 'LDAP', 'SAML', 'SDK', 'IDE', 'CLI', 'GUI',
+          'CRUD', 'SOAP', 'CPU', 'GPU', 'RAM', 'SSD', 'USB', 'UI', 'OK', 'RSS',
+          'S3', 'ID', 'UUID', 'GUID', 'SHA', 'MD5', 'ASCII', 'UTF-8', 'UTF-16',
+          'DOM', 'CDN', 'FAQ', 'AI', 'ML', 'LLM', 'USDA', 'NOVA', 'CORS',
+        ],
+        ignoreWords: ['g', 'kcal', 'HH', 'MM'],
+      }],
+    },
   },
 
   // Prettier last, so it disables formatting rules that would conflict.

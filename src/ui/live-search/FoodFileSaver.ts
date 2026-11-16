@@ -53,7 +53,7 @@ export class FoodFileSaver {
 
       // Ensure the resolved path stays within the intended storage folder
       if (!filePath.startsWith(folder)) {
-        this.plugin.logger.error(`Path traversal blocked: ${fileName} -> ${filePath}`);
+        this.plugin.logger.error(`Path traversal blocked: ${safeFileName} -> ${filePath}`);
         return { exists: false };
       }
 

@@ -60,8 +60,8 @@ export const enTranslations: LocaleData = {
         balanced: '⚖️ balanced diet (30% fat, 40% carbs, 30% protein)',
         highProtein: '💪 High protein (25% fat, 25% carbs, 50% protein)',
         plantBased: '🌱 Plant-based (25% fat, 55% carbs, 20% protein)',
-        usdaMen: '🇺🇸 Usda men (20-35% fat, 45-65% carbs, 10-35% protein)',
-        usdaWomen: '🇺🇸 Usda women (20-35% fat, 45-65% carbs, 10-35% protein)',
+        usdaMen: '🇺🇸 USDA men (20-35% fat, 45-65% carbs, 10-35% protein)',
+        usdaWomen: '🇺🇸 USDA women (20-35% fat, 45-65% carbs, 10-35% protein)',
         athlete: '🏃 Athletic performance (25% fat, 55% carbs, 20% protein)',
         cutting: '✂️ cutting/weight loss (25% fat, 30% carbs, 45% protein)',
         bulking: '📈 Bulking/muscle gain (25% fat, 45% carbs, 30% protein)',
@@ -80,10 +80,10 @@ export const enTranslations: LocaleData = {
         highProteinDesc: 'High protein for muscle building/preservation',
         plantBasedName: 'Plant-Based',
         plantBasedDesc: 'Plant-focused with adequate protein',
-        usdaMenName: 'Usda men (moderate)',
-        usdaMenDesc: 'Usda recommendations for adult men',
-        usdaWomenName: 'Usda women (moderate)',
-        usdaWomenDesc: 'Usda recommendations for adult women',
+        usdaMenName: 'USDA men (moderate)',
+        usdaMenDesc: 'USDA recommendations for adult men',
+        usdaWomenName: 'USDA women (moderate)',
+        usdaWomenDesc: 'USDA recommendations for adult women',
         athleteName: 'Athletic performance',
         athleteDesc: 'High carb for endurance and performance',
         cuttingName: 'Cutting/weight loss',
@@ -102,11 +102,11 @@ export const enTranslations: LocaleData = {
     },
     display: {
       title: 'Display',
-      showSummaryRows: 'Show macros summary rows',
+      showSummaryRows: 'Show Macros summary rows',
       showSummaryRowsDesc:
-        'Toggle whether to display the totals, targets, and remaining rows in the macros table.',
+        'Toggle whether to display the totals, targets, and remaining rows in the Macros table.',
       disableTooltips: 'Disable tooltips',
-      disableTooltipsDesc: 'Turn off all hover tooltips in macros tables for a cleaner interface.',
+      disableTooltipsDesc: 'Turn off all hover tooltips in Macros tables for a cleaner interface.',
       showCellPercentages: 'Show cell percentages',
       showCellPercentagesDesc: 'Display percentage values inside macro cells in tables.',
       energyUnit: 'Energy unit',
@@ -115,9 +115,9 @@ export const enTranslations: LocaleData = {
       energyUnitKj: 'Kilojoules (kJ)',
       energyConversionNote:
         'Energy values are automatically converted between kcal and kJ (1 kcal = 4.184 kJ)',
-      addToMacrosTabOrder: 'Add to macros tab order',
+      addToMacrosTabOrder: 'Add to Macros tab order',
       addToMacrosTabOrderDesc:
-        'Customize the order of tabs in the add to macros modal by dragging and dropping them below.',
+        'Customize the order of tabs in the add to Macros modal by dragging and dropping them below.',
       tabOrderInstructions:
         'Drag and drop the items below to change the tab order. The first item will be the default active tab.',
       dragToReorder: 'Drag to reorder',
@@ -161,7 +161,7 @@ export const enTranslations: LocaleData = {
         'Set your personal targets for vitamins, minerals and other nutrients. Defaults are the recommended daily allowances for your profile and can be overridden individually.',
       enable: 'Enable micronutrient tracking',
       enableDesc:
-        'When enabled, micronutrient totals are shown beneath your macros tables and you can configure targets below.',
+        'When enabled, micronutrient totals are shown beneath your Macros tables and you can configure targets below.',
       disabledNote:
         'Micronutrient tracking is currently disabled. Enable it above to configure your profile and targets.',
       profileTitle: 'Personal profile',
@@ -233,25 +233,24 @@ export const enTranslations: LocaleData = {
         'Configure food database APIs to enable search functionality. You can use one or multiple sources.',
       fatSecretTitle: 'FatSecret API',
       fatSecretSignupText: 'Sign up for free FatSecret API credentials at:',
-      fatSecretSignupLink: 'Fatsecret platform API',
       fatSecretEnable: 'Enable FatSecret',
       fatSecretEnableDesc: 'Enable FatSecret food database search',
       fatSecretCredentialsRequired: 'Please configure FatSecret API credentials first.',
       fatSecretNotConfigured:
         '⚠️ FatSecret API credentials not configured. Configure credentials to enable FatSecret search.',
       fatSecretConfigured: '✅ FatSecret API credentials configured successfully.',
-      usdaTitle: 'Usda FoodData central API',
+      usdaTitle: 'USDA FoodData Central API',
       usdaDescription:
-        'The usda FoodData central provides comprehensive nutrition data for both branded and foundation foods.',
-      usdaSignupText: 'Get your free usda API key at:',
-      usdaEnable: 'Enable usda',
-      usdaEnableDesc: 'Enable usda FoodData central database search',
-      usdaCredentialsRequired: 'Please configure usda API key first.',
-      usdaNotConfigured: '⚠️ usda API key not configured. Configure API key to enable usda search.',
-      usdaConfigured: '✅ Usda API key configured successfully.',
-      usdaKey: 'Usda API key',
-      usdaKeyDesc: 'Your usda FoodData central API key (free registration required)',
-      usdaKeyPlaceholder: 'Enter your usda API key here',
+        'The USDA FoodData Central provides comprehensive nutrition data for both branded and foundation foods.',
+      usdaSignupText: 'Get your free USDA API key at:',
+      usdaEnable: 'Enable USDA',
+      usdaEnableDesc: 'Enable USDA FoodData Central database search',
+      usdaCredentialsRequired: 'Please configure USDA API key first.',
+      usdaNotConfigured: '⚠️ USDA API key not configured. Configure API key to enable USDA search.',
+      usdaConfigured: '✅ USDA API key configured successfully.',
+      usdaKey: 'USDA API key',
+      usdaKeyDesc: 'Your USDA FoodData Central API key (free registration required)',
+      usdaKeyPlaceholder: 'Enter your USDA API key here',
       key: 'FatSecret API key',
       keyDesc: 'Your FatSecret API key (required for FatSecret search functionality)',
       keyPlaceholder: 'Enter your FatSecret API key here',
@@ -261,23 +260,23 @@ export const enTranslations: LocaleData = {
       testConnection: 'Test connection',
       testFatSecretConnection: 'Test FatSecret connection',
       testFatSecretConnectionDesc: 'Click to test your FatSecret API credentials.',
-      testUsdaConnection: 'Test usda connection',
-      testUsdaConnectionDesc: 'Click to test your usda API key.',
+      testUsdaConnection: 'Test USDA connection',
+      testUsdaConnectionDesc: 'Click to test your USDA API key.',
       securityNote: 'Your API credentials will be stored securely in your vault settings.',
 
       // Open Food Facts translations
-      openFoodFactsTitle: 'Open food facts',
+      openFoodFactsTitle: 'Open Food Facts',
       openFoodFactsDescription:
-        'Open food facts is a free, collaborative database of food products from around the world. No API key required!',
+        'Open Food Facts is a free, collaborative database of food products from around the world. No API key required!',
       openFoodFactsInfo:
-        'Features: multi-language support, nutrition grades, processing levels (nova), environmental scores, and ingredient lists.',
-      openFoodFactsLearnMore: 'Learn more about open food facts →',
-      openFoodFactsEnable: 'Enable open food facts',
+        'Features: multi-language support, nutrition grades, processing levels (NOVA), environmental scores, and ingredient lists.',
+      openFoodFactsLearnMore: 'Learn more about Open Food Facts →',
+      openFoodFactsEnable: 'Enable Open Food Facts',
       openFoodFactsEnableDesc:
         'Search the collaborative food database. No API key required - completely free to use!',
-      openFoodFactsEnabled: '✅ Open food facts is enabled and ready to use',
-      openFoodFactsDisabled: '⚠️ open food facts is disabled',
-      openFoodFactsNotEnabled: 'Open food facts is not enabled. Please enable it first.',
+      openFoodFactsEnabled: '✅ Open Food Facts is enabled and ready to use',
+      openFoodFactsDisabled: '⚠️ Open Food Facts is disabled',
+      openFoodFactsNotEnabled: 'Open Food Facts is not enabled. Please enable it first.',
       openFoodFactsLanguage: 'Search language',
       openFoodFactsLanguageDesc:
         'Language preference for search results and product names. "auto" uses your Obsidian language setting.',
@@ -299,17 +298,17 @@ export const enTranslations: LocaleData = {
       openFoodFactsDataQualityAll: '📊 All results (fastest, most results)',
       openFoodFactsDataQualityMedium: '📈 Medium+ quality (balanced)',
       openFoodFactsDataQualityHigh: '⭐ High quality only (most accurate)',
-      testOpenFoodFactsConnection: 'Test open food facts connection',
+      testOpenFoodFactsConnection: 'Test Open Food Facts connection',
       testOpenFoodFactsConnectionDesc:
-        "Test the connection to open food facts database to ensure it's working properly.",
+        "Test the connection to Open Food Facts database to ensure it's working properly.",
       openFoodFactsTestSuccess: '✅ Open Food Facts connection successful! Found {count} results.',
       openFoodFactsTestNoResults:
-        '⚠️ open food facts connection succeeded but no results found for "apple". This might be normal.',
+        '⚠️ Open Food Facts connection succeeded but no results found for "apple". This might be normal.',
       openFoodFactsTestCORSError:
-        '❌ Connection blocked by cors policy. This is a browser security limitation.',
+        '❌ Connection blocked by CORS policy. This is a browser security limitation.',
       openFoodFactsTestNetworkError:
-        '❌ Network error connecting to open food facts. Check your internet connection.',
-      openFoodFactsTestTimeoutError: '❌ Request timeout. Open food facts servers may be slow.',
+        '❌ Network error connecting to Open Food Facts. Check your internet connection.',
+      openFoodFactsTestTimeoutError: '❌ Request timeout. Open Food Facts servers may be slow.',
       openFoodFactsTestError: '❌ Open Food Facts test failed: {error}',
     },
     developer: {
@@ -342,9 +341,9 @@ export const enTranslations: LocaleData = {
     support: {
       title: '☕ Support the plugin',
       description: 'If you find this plugin helpful, consider supporting its development!',
-      coffeeText: 'Support continued development of the macros plugin:',
+      coffeeText: 'Support continued development of the Macros plugin:',
       linksTitle: '📚 Documentation & links',
-      linksDescription: 'Useful resources for the macros plugin:',
+      linksDescription: 'Useful resources for the Macros plugin:',
       githubLink: '🔗 GitHub repository',
       docsLink: '📖 Plugin documentation',
       issuesLink: '🐛 Report issues',
@@ -353,7 +352,7 @@ export const enTranslations: LocaleData = {
       pluginAuthor: 'Author: {author}',
       pluginDescription: 'Description: {description}',
       thanksMessage:
-        '🙏 Thank you for using the macros plugin! Your support helps keep this project alive and growing.',
+        '🙏 Thank you for using the Macros plugin! Your support helps keep this project alive and growing.',
     },
   },
   food: {
@@ -368,15 +367,15 @@ export const enTranslations: LocaleData = {
         all: 'All',
         fatsecret: 'FatSecret',
         usda: 'USDA',
-        usdaFoundation: 'Usda | foundation',
-        usdaBranded: 'Usda | branded',
-        usdaLegacy: 'Usda | legacy',
-        openfoodfacts: 'Open food facts',
+        usdaFoundation: 'USDA | foundation',
+        usdaBranded: 'USDA | branded',
+        usdaLegacy: 'USDA | legacy',
+        openfoodfacts: 'Open Food Facts',
       },
       source: {
         fatsecret: 'FatSecret',
         usda: 'USDA',
-        openfoodfacts: 'Open food facts',
+        openfoodfacts: 'Open Food Facts',
       },
       error: {
         fetchFailed: 'Failed to fetch search results. Please try again.',
@@ -474,9 +473,9 @@ export const enTranslations: LocaleData = {
       saveChanges: 'Save changes',
     },
     addTo: {
-      title: 'Add items to macros',
+      title: 'Add items to Macros',
       description:
-        'Search and select meal templates or individual food items to add to your macros table.',
+        'Search and select meal templates or individual food items to add to your Macros table.',
       searchPlaceholder: 'Search meals and foods...',
       mealTemplates: '🍽️ meal templates',
       individualFoods: '🥗Individual foods',
@@ -555,7 +554,7 @@ export const enTranslations: LocaleData = {
       colPercent: '% of target',
       limitBadge: 'Limit',
       noFoods:
-        'No foods found for this macros block. Add foods to your macros table to see micronutrient totals.',
+        'No foods found for this Macros block. Add foods to your Macros table to see micronutrient totals.',
       noData:
         'None of the foods in this block have micronutrient data yet. Add micronutrient values when creating foods, or use "show: all" to see your targets.',
       footnote:
@@ -566,7 +565,7 @@ export const enTranslations: LocaleData = {
     },
   },
   charts: {
-    title: "Today's macros",
+    title: "Today's Macros",
     titleDate: 'Macros for {date}',
     titleCombined: 'Combined Macros (last {days} days)',
     titleMultiple: 'Combined Macros: {ids}',
@@ -584,7 +583,7 @@ export const enTranslations: LocaleData = {
     title: 'Macro calculator',
     description: 'Calculate nutrition totals for selected macro tables.',
     selectTables: 'Select macro tables to include in calculation:',
-    noTables: 'No macro tables found. Create some macros tables first.',
+    noTables: 'No macro tables found. Create some Macros tables first.',
     calculate: 'Calculate totals',
     results: 'Calculation results',
     aggregate: 'Aggregate totals',
@@ -779,7 +778,7 @@ export const enTranslations: LocaleData = {
     },
   },
   commands: {
-    forceReload: 'Force reload all macros',
+    forceReload: 'Force reload all Macros',
     addFood: 'Add food item (search or manual entry)',
     toggleDebug: 'Toggle debug mode',
   },
@@ -791,7 +790,7 @@ export const enTranslations: LocaleData = {
     itemsAdded: 'Added {count} items to your macros table.',
     itemsAddError: 'Error adding items: {error}',
     reloadComplete: 'Reload complete!',
-    reloadInProgress: 'Forcing complete reload of all macros data...',
+    reloadInProgress: 'Forcing complete reload of all Macros data...',
     debugEnabled: 'Debug mode enabled',
     debugDisabled: 'Debug mode disabled',
     testConnectionSuccess: 'Test connection successful!',
@@ -805,8 +804,8 @@ export const enTranslations: LocaleData = {
     removalCancelled: 'Removal cancelled',
     quantityUpdateError: 'Error updating quantity: {error}',
     offDataIncomplete:
-      'Some open food facts data may be incomplete. Consider verifying nutrition information.',
-    offProductSaved: 'Open food facts product saved successfully with available data',
+      'Some Open Food Facts data may be incomplete. Consider verifying nutrition information.',
+    offProductSaved: 'Open Food Facts product saved successfully with available data',
   },
   validation: {
     required: 'This field is required',
@@ -865,7 +864,7 @@ export const enTranslations: LocaleData = {
     timestampRemoved: 'Timestamp removed successfully',
     saveError: 'Error saving timestamp: {error}',
     removeError: 'Error removing timestamp: {error}',
-    invalidTime: 'Please enter a valid time in hh:mm format',
+    invalidTime: 'Please enter a valid time in HH:MM format',
     consumed: 'Consumed at {time}',
     contextMenu: {
       addTimestamp: 'Add timestamp',
@@ -908,8 +907,8 @@ export const enTranslations: LocaleData = {
     },
   },
   units: {
-    grams: 'G',
-    kcal: 'Kcal',
+    grams: 'g',
+    kcal: 'kcal',
     kj: 'kJ',
   },
   tooltips: {
@@ -929,8 +928,8 @@ export const enTranslations: LocaleData = {
     offLowQuality: 'Limited data available, nutrition information may be incomplete',
     nutriScore: 'Nutri-Score: nutrition quality grade from a (best) to e (worst)',
     novaGroup:
-      'Nova classification: food processing level from 1 (unprocessed) to 4 (ultra-processed)',
-    offCommunityData: 'Data sourced from the open food facts community database',
+      'NOVA classification: food processing level from 1 (unprocessed) to 4 (ultra-processed)',
+    offCommunityData: 'Data sourced from the Open Food Facts community database',
   },
   errors: {
     fileNotFound: 'Selected food item not found.',
@@ -945,10 +944,10 @@ export const enTranslations: LocaleData = {
     unknownError: 'Unknown error occurred',
     noActiveFile: 'No active file',
     macrosBlockNotFound: 'Macros block not found for meal: {mealName}',
-    noMacrosData: 'No macros data found',
+    noMacrosData: 'No Macros data found',
     mealNotFound: 'Meal "{mealName}" not found',
     foodItemNotFound: 'Food item "{foodName}" not found in meal "{mealName}"',
-    updateMacrosBlockFailed: 'Failed to update macros block',
+    updateMacrosBlockFailed: 'Failed to update Macros block',
   },
   suggestions: {
     today: 'Today',
