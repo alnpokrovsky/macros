@@ -30,6 +30,7 @@ export class FoodFileSaver {
   sanitizeFileName(fileName: string): string {
     return fileName
       .replace(/[<>:"/\\|?*]/g, '') // Remove invalid filename characters
+      .replace(/\.\./g, '') // Remove path traversal sequences
       .replace(/\s+/g, ' ') // Normalize spaces
       .replace(/^\s+|\s+$/g, '') // Trim whitespace
       .substring(0, 100) // Limit length
@@ -49,6 +50,12 @@ export class FoodFileSaver {
       const safeFileName = this.sanitizeFileName(fileName);
       const folder = normalizePath(this.plugin.settings.storageFolder);
       const filePath = normalizePath(`${folder}/${safeFileName}.md`);
+
+      // Ensure the resolved path stays within the intended storage folder
+      if (!filePath.startsWith(folder)) {
+        this.plugin.logger.error(`Path traversal blocked: ${fileName} -> ${filePath}`);
+        return { exists: false };
+      }
 
       // Use proper Obsidian API to check file existence
       const existingFile = this.app.vault.getAbstractFileByPath(filePath);
@@ -255,6 +262,11 @@ ${food.description}
     }
 
     const filePath = normalizePath(`${folderPath}/${safeFileName}.md`);
+
+    // Ensure the resolved path stays within the intended storage folder
+    if (!filePath.startsWith(folderPath)) {
+      throw new Error('Invalid file path: path traversal detected.');
+    }
 
     try {
       // Use proper Obsidian API for file creation
