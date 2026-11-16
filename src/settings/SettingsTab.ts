@@ -105,11 +105,14 @@ export class NutritionalSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
+    // Create tab navigation + content splitter (flex, keeps tabs from floating over content)
+    const splitEl = containerEl.createDiv({ cls: 'macros-settings-split' });
+
     // Create tab navigation
-    containerEl.createDiv({ cls: 'macros-settings-nav' });
+    const navEl = splitEl.createDiv({ cls: 'macros-settings-nav' });
 
     this.tabs.forEach((tab) => {
-      const tabButton = containerEl.createDiv({
+      const tabButton = navEl.createDiv({
         cls: `macros-settings-tab ${this.activeTabId === tab.id ? 'active' : ''}`,
         attr: { 'data-tab': tab.id },
       });
@@ -131,7 +134,7 @@ export class NutritionalSettingTab extends PluginSettingTab {
     });
 
     // Create tab content area
-    const tabContent = containerEl.createDiv({ cls: 'macros-settings-content' });
+    const tabContent = splitEl.createDiv({ cls: 'macros-settings-content' });
 
     // Render active tab content
     this.renderActiveTab(tabContent);

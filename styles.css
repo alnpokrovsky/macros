@@ -8357,16 +8357,23 @@ body:not(.theme-obsidian) .api-credentials-success {
    MACROS PLUGIN - TABBED SETTINGS STYLES
    =========================================== */
 
+/* Tab Splitter — keeps nav and content side by side in document flow */
+.macros-settings-split {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+}
+
 /* Tab Navigation */
 .macros-settings-nav {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  margin-bottom: 20px;
   border-right: 1px solid var(--background-modifier-border);
   padding-right: 16px;
-  min-width: 200px;
-  float: left;
+  min-width: 190px;
+  max-width: 260px;
+  flex-shrink: 0;
 }
 
 /* Individual Tab Button */
@@ -8418,9 +8425,11 @@ body:not(.theme-obsidian) .api-credentials-success {
 
 /* Tab Content Area */
 .macros-settings-content {
-  margin-left: 220px;
-  min-height: 400px;
+  flex: 1;
+  min-width: 0;
   padding: 0 16px;
+  overflow-y: auto;
+  max-height: calc(100vh - 120px);
 }
 
 /* Support Tab Specific Styles */
@@ -8810,8 +8819,11 @@ body:not(.theme-obsidian) .api-credentials-success {
 
 /* Mobile Responsive Design */
 @media (max-width: 768px) {
+  .macros-settings-split {
+    flex-direction: column;
+  }
+
   .macros-settings-nav {
-    float: none;
     flex-direction: row;
     flex-wrap: wrap;
     margin-bottom: 16px;
